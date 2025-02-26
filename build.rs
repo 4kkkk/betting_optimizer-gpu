@@ -1,3 +1,5 @@
+mod test;
+
 use std::process::Command;
 use std::path::Path;
 
