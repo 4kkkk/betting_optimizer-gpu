@@ -92,6 +92,7 @@ extern "C" __global__ void optimize_kernel(
         i++;
     }
 
+
     results[idx].balance = balance;
     results[idx].max_balance = max_balance;
     results[idx].total_bets = total_bets;
