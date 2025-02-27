@@ -3,7 +3,6 @@ mod models;
 mod optimization;
 mod utils;
 
-
 use crate::gui::OptimizationApp;
 use eframe::egui::ViewportBuilder;
 

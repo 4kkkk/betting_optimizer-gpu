@@ -20,6 +20,7 @@ pub struct Settings {
     pub max_search_threshold: String,
     pub min_attempts_count: String,
     pub max_attempts_count: String,
+    // Добавляем новые поля с значениями по умолчанию
     pub max_balance_threshold: String,
     pub series_win_rate_threshold: String,
     pub max_results: String,
