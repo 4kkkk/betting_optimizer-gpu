@@ -148,8 +148,7 @@ pub fn strategy_triple_growth(
 
                 let mut current_stake = initial_bet;
 
-                while betting_attempts < attempts && current_i < len - 1 {
-                    // Изменили условие
+                while betting_attempts <= attempts - 1 && current_i < len - 1 {
                     current_i += 1;
 
                     total_bets += 1;
@@ -167,7 +166,6 @@ pub fn strategy_triple_growth(
                         betting_attempts += 1;
                     }
                 }
-
                 if betting_attempts >= attempts {
                     consecutive_losses = 0;
                 }
