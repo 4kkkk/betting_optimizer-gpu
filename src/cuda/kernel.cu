@@ -41,8 +41,9 @@ extern "C" __global__ void optimize_kernel(
     int winning_series = 0;
     int consecutive_losses = 0;
     int i = num_low;
+    bool insufficient_balance_flag = false;
 
-    while (i < numbers_len) {
+    while (i < numbers_len && !insufficient_balance_flag) {
         bool sequence_valid = true;
 
         for (int j = 0; j < num_low && sequence_valid; j++) {
@@ -59,13 +60,27 @@ extern "C" __global__ void optimize_kernel(
 
             if (search_i < numbers_len && numbers[search_i] >= high_threshold) {
                 total_series++;
+
+                double test_balance = balance;
+                double test_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
+                for (int test_attempt = 0; test_attempt < attempts; test_attempt++) {
+                    if (test_stake > test_balance) {
+                        insufficient_balance_flag = true;
+                        break;
+                    }
+                    test_balance -= test_stake;
+                    test_stake *= multiplier;
+                }
+
+                if (insufficient_balance_flag) {
+                    break;
+                }
+
                 int betting_attempts = 0;
                 double current_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
                 int current_i = search_i;
                 while (betting_attempts <= attempts - 1 && current_i < numbers_len - 1) {
-                    // Проверка достаточности баланса для текущей ставки
                     if (current_stake > balance) {
-                        // Если баланса не хватает, прерываем серию ставок
                         break;
                     }
 
@@ -83,7 +98,8 @@ extern "C" __global__ void optimize_kernel(
                         consecutive_losses++;
                         current_stake *= multiplier;
                         betting_attempts++;
-                    }                }
+                    }
+                }
 
                 if (betting_attempts >= attempts) {
                     consecutive_losses = 0;
@@ -95,10 +111,13 @@ extern "C" __global__ void optimize_kernel(
         i++;
     }
 
-    results[idx].balance = balance;
-    results[idx].max_balance = max_balance;
-    results[idx].total_bets = total_bets;
-    results[idx].total_series = total_series;
-    results[idx].winning_series = winning_series;
-    results[idx].profit = balance - results[idx].initial_balance;
-}
+    if (insufficient_balance_flag) {
+        results[idx].profit = -1.0;
+    } else {
+        results[idx].balance = balance;
+        results[idx].max_balance = max_balance;
+        results[idx].total_bets = total_bets;
+        results[idx].total_series = total_series;
+        results[idx].winning_series = winning_series;
+        results[idx].profit = balance - results[idx].initial_balance;
+    }}

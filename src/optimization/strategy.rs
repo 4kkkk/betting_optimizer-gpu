@@ -418,11 +418,11 @@ fn process_gpu_combinations(
 
             let mut batch_results = gpu_results_buffer;
             d_results.copy_to(&mut batch_results).unwrap();
-
             let batch_results = batch_results
                 .into_iter()
                 .zip(batch.iter())
                 .filter_map(|(gpu_result, combo)| {
+                    // Отфильтровываем комбинации с недостаточным балансом для всех ставок
                     if gpu_result.profit > 0.0 {
                         Some(OptimizationResult {
                             num_low: combo.num_low,
@@ -471,6 +471,27 @@ fn process_combination(
     } else {
         0.0
     };
+
+    // Проверка возможности выполнить максимальное количество ставок
+    let initial_bet = if params.bet_type == "fixed" {
+        params.stake
+    } else {
+        params.initial_balance * (combo.stake_percent / 100.0)
+    };
+
+    // Симуляция последовательности ставок для проверки достаточности баланса
+    let mut test_balance = params.initial_balance;
+    let mut test_stake = initial_bet;
+    for _ in 0..combo.attempts {
+        if test_stake > test_balance {
+            // Если для следующей ставки недостаточно средств, отбраковываем эту комбинацию
+            return None;
+        }
+        test_balance -= test_stake;
+        test_stake *= combo.multiplier;
+    }
+
+    // Если проверка прошла, продолжаем с основным расчетом
     let (balance, max_balance, total_bets, total_series, winning_series, _) =
         strategy_triple_growth(
             numbers,
