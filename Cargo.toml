@@ -17,3 +17,4 @@ rustacuda_derive = "0.1.2"
 core_affinity = "0.8.1"
 windows-sys = { version = "0.59.0", features = ["Win32_System_Threading"] }
 crossbeam = "0.8.4"
+num_cpus = "1.16.0"

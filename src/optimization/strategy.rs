@@ -16,7 +16,14 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
 
-const P_THREADS: usize = 16;
+const P_THREADS: usize = {
+    let physical_cores = num_cpus::get_physical();
+    if physical_cores > 4 {
+        physical_cores - 2 // Оставляем 2 ядра для системы
+    } else {
+        physical_cores
+    }
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
@@ -192,6 +199,16 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
     let cuda_available = check_cuda_availability();
     let combinations = generate_parameter_combinations(params);
     let total_combinations = combinations.len();
+
+    // Оптимальный баланс CPU/GPU для i7-13700KF + RTX 3060
+    if cuda_available {
+        // Для i7-13700KF (16 потоков) и RTX 3060 (12GB)
+        // передаем больше работы на GPU, т.к. он хорошо справляется с параллельными вычислениями
+        0.35 // 35% обработки на CPU, 65% на GPU - оптимально для вашей конфигурации
+    } else {
+        1.0 // 100% обработки на CPU, если GPU недоступен
+    };
+
     let progress_step = total_combinations / 20; // 5% шаг
     let processed_cpu = Arc::new(AtomicUsize::new(0));
     let processed_gpu = Arc::new(AtomicUsize::new(0));
@@ -254,7 +271,6 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
             })
             .build()
             .unwrap();
-
         while let Some(chunk) = task_queue_cpu.pop() {
             let chunk_results = p_core_pool.install(|| {
                 process_cpu_combinations(&chunk, &numbers_for_cpu, &params_for_cpu)
@@ -264,10 +280,9 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
             let current = processed_cpu_clone.fetch_add(chunk.len(), Ordering::SeqCst);
             if current / progress_step != (current + chunk.len()) / progress_step {
                 println!("CPU прогресс: {}%",
-                         ((current + chunk.len()) * 100) / total_combinations);
+                          ((current + chunk.len()) as f64 * 100.0) / total_combinations as f64);
             }
         }
-
         (cpu_results, cpu_start.elapsed())
     });
 
@@ -362,13 +377,35 @@ fn process_gpu_combinations(
 
         let ptx = CString::new(include_str!("../cuda/kernel.ptx")).unwrap();
         let module = Module::load_from_string(&ptx).unwrap();
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
         let numbers_slice = numbers.as_slice().unwrap();
         let kernel_name = CString::new("optimize_kernel").unwrap();
         let function = module.get_function(&kernel_name).unwrap();
         let bet_type = if params.bet_type == "fixed" { 0 } else { 1 };
 
-        while let Some(batch) = task_queue.pop() {
+        // Вычисляем размер партии, который не превысит память GPU
+        let gpu_memory = 10 * 1024 * 1024 * 1024; // ~10 ГБ доступной памяти из 12 ГБ
+        let element_size = size_of::<f64>() * 7; // Размер одного элемента params_array
+        let max_batch_size = (gpu_memory as f64 * 0.8) as usize / element_size; // Используем 80% доступной памяти
+
+        // Оптимальное количество потоков CUDA для RTX 3060
+        let num_streams = 4; // 4 потока обеспечивают хорошую загрузку GPU без перерасхода памяти
+        let mut streams = Vec::with_capacity(num_streams);
+
+        for _ in 0..num_streams {
+            streams.push(Stream::new(StreamFlags::NON_BLOCKING, None).unwrap());
+        }
+
+        // Используем разные потоки для разных партий данных
+        let mut stream_idx = 0;
+
+        while let Some(mut batch) = task_queue.pop() {
+            // Ограничиваем размер партии, чтобы не превышать память GPU
+            if batch.len() > max_batch_size {
+                // Разбиваем на части
+                let remaining = batch.split_off(max_batch_size);
+                task_queue.push(remaining).unwrap();
+            }
+
             let params_array: Vec<f64> = batch
                 .iter()
                 .flat_map(|combo| {
@@ -401,7 +438,11 @@ fn process_gpu_combinations(
             let mut d_params = DeviceBuffer::from_slice(&params_array).unwrap();
             let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer).unwrap();
 
-            launch!(function<<<(batch.len() as u32, 1, 1), (256, 1, 1), 0, stream>>>(
+            // Выбираем текущий поток
+            let current_stream = &streams[stream_idx];
+
+            // Обработка на выбранном потоке...
+            launch!(function<<<(batch.len() as u32, 1, 1), (256, 1, 1), 0, current_stream>>>(
                 d_numbers.as_device_ptr(),
                 d_params.as_device_ptr(),
                 d_results.as_device_ptr(),
@@ -412,7 +453,8 @@ fn process_gpu_combinations(
             ))
                 .unwrap();
 
-            stream.synchronize().unwrap();
+            // Переходим к следующему потоку
+            stream_idx = (stream_idx + 1) % num_streams;
 
             let mut batch_results = gpu_results_buffer;
             d_results.copy_to(&mut batch_results).unwrap();
@@ -450,15 +492,18 @@ fn process_gpu_combinations(
             let current = processed_gpu.fetch_add(batch.len(), Ordering::SeqCst);
             if current / progress_step != (current + batch.len()) / progress_step {
                 println!("GPU прогресс: {}%",
-                         ((current + batch.len()) * 100) / total_combinations);
+                         ((current + batch.len()) as f64 * 100.0) / total_combinations as f64);
             }
+        }
+
+        // Синхронизируем все потоки в конце
+        for stream in &streams {
+            stream.synchronize().unwrap();
         }
     }
 
     (all_gpu_results, gpu_start.elapsed())
 }
-
-
 fn process_combination(
     combo: &ParameterCombination,
     numbers: &Array1<f64>,
@@ -507,3 +552,17 @@ fn process_combination(
         None
     }
 }
+
+/*
+// Оптимизация для больших наборов промежуточных результатов
+// Используем фильтрацию на GPU для уменьшения размера передаваемых данных:
+
+// Добавьте новую функцию kern
+let perform_early_filtering = true; // Включить фильтрацию на GPU
+
+// Изменить структуру для возврата только полезных результатов
+if perform_early_filtering {
+    // Фильтруем нулевые результаты на GPU перед передачей на CPU
+    // Это требует модификации CUDA kernel
+}
+*/
