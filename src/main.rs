@@ -6,6 +6,7 @@ mod utils;
 use crate::gui::OptimizationApp;
 use eframe::egui::ViewportBuilder;
 
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
