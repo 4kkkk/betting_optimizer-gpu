@@ -1,5 +1,5 @@
 {
-  "file_path": "D:\\betting_optimizer-gpu\\data\\data.txt",
+  "file_path": "D:\\betting_optimizer-gpu\\data\\ezcash-kefs-online.txt",
   "stake": "1",
   "min_multiplier": "1",
   "max_multiplier": "5",
@@ -15,8 +15,8 @@
   "max_high_threshold": "5",
   "min_search_threshold": "1",
   "max_search_threshold": "2",
-  "min_attempts_count": "1",
-  "max_attempts_count": "4",
+  "min_attempts_count": "5",
+  "max_attempts_count": "5",
   "max_balance_threshold": "1000",
   "series_win_rate_threshold": "50",
   "max_results": "10000"
