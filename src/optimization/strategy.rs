@@ -458,7 +458,6 @@ fn process_gpu_combinations(
     (all_gpu_results, gpu_start.elapsed())
 }
 
-
 fn process_combination(
     combo: &ParameterCombination,
     numbers: &Array1<f64>,
