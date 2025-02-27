@@ -340,7 +340,6 @@ fn process_cpu_combinations(
             .collect()
     })
 }
-
 fn process_gpu_combinations(
     task_queue: &Arc<ArrayQueue<Vec<ParameterCombination>>>,
     numbers: &Array1<f64>,
