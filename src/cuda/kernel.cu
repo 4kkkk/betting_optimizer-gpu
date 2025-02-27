@@ -62,9 +62,14 @@ extern "C" __global__ void optimize_kernel(
                 int betting_attempts = 0;
                 double current_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
                 int current_i = search_i;
+                while (betting_attempts <= attempts - 1 && current_i < numbers_len - 1) {
+                    // Проверка достаточности баланса для текущей ставки
+                    if (current_stake > balance) {
+                        // Если баланса не хватает, прерываем серию ставок
+                        break;
+                    }
 
-                while (betting_attempts <= attempts - 1 && current_i < numbers_len - 1) {                    current_i++;
-
+                    current_i++;
                     total_bets++;
                     balance -= current_stake;
 
@@ -78,8 +83,7 @@ extern "C" __global__ void optimize_kernel(
                         consecutive_losses++;
                         current_stake *= multiplier;
                         betting_attempts++;
-                    }
-                }
+                    }                }
 
                 if (betting_attempts >= attempts) {
                     consecutive_losses = 0;

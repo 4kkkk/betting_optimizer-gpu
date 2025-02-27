@@ -134,8 +134,7 @@ pub fn save_detailed_calculation(
                     balance * (best_result.stake_percent / 100.0)
                 };
 
-                for attempt in 0..best_result.attempts {
-                    if current_stake > balance {
+                for attempt in 0..=best_result.attempts-1 {                    if current_stake > balance {
                         break;
                     }
 

@@ -138,7 +138,7 @@ pub fn strategy_triple_growth(
             if search_i < len && numbers[search_i] >= high_threshold {
                 total_series += 1;
                 let mut betting_attempts = 0;
-                let mut current_i = search_i; // Убрали +1
+                let mut current_i = search_i;
 
                 let initial_bet = if bet_type == 0 {
                     stake
@@ -149,8 +149,13 @@ pub fn strategy_triple_growth(
                 let mut current_stake = initial_bet;
 
                 while betting_attempts <= attempts - 1 && current_i < len - 1 {
-                    current_i += 1;
+                    // Проверка достаточности баланса для текущей ставки
+                    if current_stake > balance {
+                        // Если баланса не хватает, прерываем серию ставок
+                        break;
+                    }
 
+                    current_i += 1;
                     total_bets += 1;
                     balance -= current_stake;
 
@@ -166,6 +171,7 @@ pub fn strategy_triple_growth(
                         betting_attempts += 1;
                     }
                 }
+
                 if betting_attempts >= attempts {
                     consecutive_losses = 0;
                 }
@@ -185,7 +191,6 @@ pub fn strategy_triple_growth(
         consecutive_losses,
     )
 }
-
 pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<OptimizationResult> {
     let cuda_available = check_cuda_availability();
     let combinations = generate_parameter_combinations(params);
