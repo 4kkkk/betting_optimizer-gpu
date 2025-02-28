@@ -22,7 +22,7 @@
   "max_results": "10000",
   "gpu_memory_limit": "10000",
   "batch_size": "5000",
-  "use_gpu": "false",
+  "use_gpu": "true",
   "use_shared_memory": "true",
   "block_size": "512",
   "grid_size": "64",
