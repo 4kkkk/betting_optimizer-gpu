@@ -3,6 +3,11 @@
 
 #define SM_TARGET 86
 
+// Константы для настройки производительности
+#define MAX_SHARED_MEMORY_SIZE 49152  // Максимальный размер shared memory для SM 8.6 (RTX 3060)
+#define BLOCK_SIZE_DEFAULT 256        // Для регистров
+
+// Результаты оптимизации
 struct GpuOptimizationResult {
     double balance;
     double max_balance;
@@ -13,6 +18,7 @@ struct GpuOptimizationResult {
     double initial_balance;
 };
 
+// Оптимизированное ядро CUDA для RTX 3060
 extern "C" __global__ void optimize_kernel(
     const double* __restrict__ numbers,
     const double* __restrict__ params,
@@ -25,6 +31,7 @@ extern "C" __global__ void optimize_kernel(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= params_len) return;
 
+    // Используем быстрый доступ к параметрам через кэшированные регистры
     const int param_offset = idx * 7;
     const int num_low = __double2int_rd(params[param_offset]);
     const double search_threshold = params[param_offset + 1];
@@ -34,18 +41,47 @@ extern "C" __global__ void optimize_kernel(
     const double stake_param = params[param_offset + 5];
     const int attempts = __double2int_rd(params[param_offset + 6]);
 
+    // Используем регистры для часто используемых переменных
     double balance = results[idx].initial_balance;
     double max_balance = balance;
     int total_bets = 0;
     int total_series = 0;
     int winning_series = 0;
     int consecutive_losses = 0;
-    int i = num_low;
     bool insufficient_balance_flag = false;
 
+    // Вместо константных индексов используем переменную i
+    int i = num_low;
+
+    // Оптимизация: предварительная проверка длины последовательности
+    if (i >= numbers_len) {
+        results[idx].profit = -1.0;
+        return;
+    }
+
+    // Предварительный тест на возможность выполнить все ставки в серии
+    double test_balance = balance;
+    double test_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
+
+    for (int test_attempt = 0; test_attempt < attempts; test_attempt++) {
+        if (test_stake > test_balance) {
+            insufficient_balance_flag = true;
+            break;
+        }
+        test_balance -= test_stake;
+        test_stake *= multiplier;
+    }
+
+    if (insufficient_balance_flag) {
+        results[idx].profit = -1.0;
+        return;
+    }
+
+    // Основной цикл оптимизации
     while (i < numbers_len && !insufficient_balance_flag) {
         bool sequence_valid = true;
 
+        // Быстрая проверка валидности последовательности
         for (int j = 0; j < num_low && sequence_valid; j++) {
             if (i <= j || numbers[i - j - 1] > search_threshold) {
                 sequence_valid = false;
@@ -53,6 +89,7 @@ extern "C" __global__ void optimize_kernel(
         }
 
         if (sequence_valid) {
+            // Поиск соответствующего высокого порога
             int search_i = i;
             while (search_i < numbers_len && numbers[search_i] < high_threshold) {
                 search_i++;
@@ -61,8 +98,10 @@ extern "C" __global__ void optimize_kernel(
             if (search_i < numbers_len && numbers[search_i] >= high_threshold) {
                 total_series++;
 
-                double test_balance = balance;
-                double test_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
+                // Проверка баланса для всей серии ставок
+                test_balance = balance;
+                test_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
+
                 for (int test_attempt = 0; test_attempt < attempts; test_attempt++) {
                     if (test_stake > test_balance) {
                         insufficient_balance_flag = true;
@@ -76,9 +115,11 @@ extern "C" __global__ void optimize_kernel(
                     break;
                 }
 
+                // Размещение ставок
                 int betting_attempts = 0;
                 double current_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
                 int current_i = search_i;
+
                 while (betting_attempts <= attempts - 1 && current_i < numbers_len - 1) {
                     if (current_stake > balance) {
                         break;
@@ -111,6 +152,7 @@ extern "C" __global__ void optimize_kernel(
         i++;
     }
 
+    // Запись результатов
     if (insufficient_balance_flag) {
         results[idx].profit = -1.0;
     } else {
@@ -120,4 +162,5 @@ extern "C" __global__ void optimize_kernel(
         results[idx].total_series = total_series;
         results[idx].winning_series = winning_series;
         results[idx].profit = balance - results[idx].initial_balance;
-    }}
+    }
+}
