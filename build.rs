@@ -103,7 +103,7 @@ fn main() {
             eprintln!("NVCC не найден: {}", e);
             eprintln!("Сборка продолжится без поддержки CUDA");
 
-            // Создаем заглушку PTX-файла при отсутствии NVCC
+            // Создаем заглушку PTX-файла при отсутствии NVCC,
             // чтобы избежать ошибок компиляции
             if !ptx_path.exists() {
                 fs::write(ptx_path, "// Empty PTX file - NVCC not found")
