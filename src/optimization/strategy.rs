@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Threading::{
 // Оптимизация для i7-13700KF (24 потока)
 //const P_THREADS: usize = 24;
 // RTX 3060 поддерживает до 1024 потоков в блоке
-const BLOCK_SIZE: u32 = 512; // Увеличиваем до 512
+const BLOCK_SIZE: u32 = 1024; // Увеличиваем до 512
 const GRID_SIZE: u32 = 64;   // 64 блока
 
 // Размер батча для обработки данных
