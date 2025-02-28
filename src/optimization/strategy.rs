@@ -25,6 +25,7 @@ const GRID_SIZE: u32 = 64;   // 64 блока
 // Размер батча для обработки данных
 const BATCH_SIZE: usize = 5000;
 
+
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
 struct GpuOptimizationResult {
