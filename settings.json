@@ -1,8 +1,8 @@
 {
   "file_path": "D:\\betting_optimizer-gpu\\data\\data_filtered.txt",
   "stake": "1",
-  "min_multiplier": "2.2",
-  "max_multiplier": "4",
+  "min_multiplier": "3",
+  "max_multiplier": "3",
   "initial_balance": "500",
   "min_num_low": "4",
   "max_num_low": "4",

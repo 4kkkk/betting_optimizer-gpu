@@ -308,6 +308,12 @@ where
 
     progress_callback(0, total_combinations);
     println!("Всего комбинаций для обработки: {}", total_combinations);
+    if combinations.len() <= 100 {
+        println!("Мало комбинаций, обрабатываем напрямую");
+        let cpu_start = Instant::now();
+        let results = process_cpu_combinations(&combinations, numbers, params, cancel_flag);
+        return (results, Some(cpu_start.elapsed()), None);
+    }
 
     // Создаем общую очередь задач для CPU и GPU
     let shared_task_queue = Arc::new(ArrayQueue::new(total_combinations));
@@ -320,12 +326,16 @@ where
     while combination_index < combinations.len() {
         let end_index = std::cmp::min(combination_index + batch_size, combinations.len());
         let batch = combinations[combination_index..end_index].to_vec();
+        // В очередь нужно поместить каждый пакет как отдельный элемент
         if shared_task_queue.push(batch).is_err() {
-            // Если очередь заполнена, выходим из цикла
+            println!("Ошибка добавления пакета в очередь"); // Добавить логирование
             break;
         }
         combination_index = end_index;
     }
+
+    // Добавить диагностику
+    println!("Добавлено в очередь пакетов: {}", shared_task_queue.len());
 
     // Счетчик обработанных комбинаций (общий для CPU и GPU)
     let processed_count = Arc::new(AtomicUsize::new(0));
@@ -734,8 +744,9 @@ fn process_combination(
         );
 
     // Логирование результатов для отладки
-    println!("  Результат: баланс={:.2}, прибыль={:.2}, прибыльная={}",
-             balance, balance - params.initial_balance, balance > params.initial_balance);
+    println!("Проверка комбинации: множитель={:.2}, поиск={:.2}, ставка={:.2}, результат={}",
+             combo.multiplier, combo.search_threshold, combo.payout_threshold,
+             if balance > params.initial_balance { "ПРИБЫЛЬ" } else { "УБЫТОК" });
 
     // Фильтруем только прибыльные стратегии с приемлемым допуском
     if total_series > 0 && balance > params.initial_balance * (1.0 + EPSILON) {
