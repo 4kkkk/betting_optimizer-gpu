@@ -11,14 +11,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
-
-// Оптимизация для i7-13700KF (24 потока)
-// RTX 3060 поддерживает до 1024 потоков в блоке
 const BLOCK_SIZE: u32 = 1024;
 const GRID_SIZE: u32 = 64;
 
-// Размер батча для обработки данных
 const BATCH_SIZE: usize = 5000;
+
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
 struct GpuOptimizationResult {
@@ -41,26 +38,21 @@ struct ParameterCombination {
     stake_percent: f64,
     attempts: usize,
 }
+
 fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination> {
-    // Используем целые числа для шагов, чтобы избежать проблем с плавающей точкой
-    const PRECISION: i32 = 10; // Множитель для преобразования чисел с плавающей точкой в целые
+
+    const PRECISION: i32 = 10;
 
     let mut combinations = Vec::new();
-    println!("Начинаем генерацию комбинаций параметров...");
 
-    // Преобразуем границы диапазонов в целые числа для более точных вычислений
     let min_mult_int = (params.min_multiplier * PRECISION as f64) as i32;
     let max_mult_int = (params.max_multiplier * PRECISION as f64) as i32;
-    let step_int = 1; // Шаг 0.1 при PRECISION = 10
+    let step_int = 1;
 
-
-
-    // Количество итераций для множителя (включая конечную точку)
     let mult_iterations = (max_mult_int - min_mult_int) / step_int + 1;
 
-
     for num_low in params.min_num_low..=params.max_num_low {
-        // Аналогично преобразуем другие параметры
+
         let min_search_int = (params.min_search_threshold * PRECISION as f64) as i32;
         let max_search_int = (params.max_search_threshold * PRECISION as f64) as i32;
         let search_iterations = (max_search_int - min_search_int) / step_int + 1;
@@ -73,9 +65,6 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
         let max_payout_int = (params.max_payout_threshold * PRECISION as f64) as i32;
         let payout_iterations = (max_payout_int - min_payout_int) / step_int + 1;
 
-
-
-        // Генерируем комбинации, используя целочисленные индексы
         for m_idx in 0..mult_iterations {
             let multiplier = (min_mult_int + m_idx * step_int) as f64 / PRECISION as f64;
 
@@ -88,7 +77,6 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
                     for p_idx in 0..payout_iterations {
                         let payout_threshold = (min_payout_int + p_idx * step_int) as f64 / PRECISION as f64;
 
-                        // Определяем stake_percent в зависимости от типа ставки
                         let stake_percent_range = if params.bet_type == "fixed" {
                             vec![params.min_stake_percent]
                         } else {
@@ -101,7 +89,6 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
                                 .collect()
                         };
 
-                        // Генерируем комбинации для всех значений попыток
                         for stake_percent in stake_percent_range {
                             for attempts in params.min_attempts_count..=params.max_attempts_count {
                                 combinations.push(ParameterCombination {
@@ -113,8 +100,6 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
                                     stake_percent,
                                     attempts,
                                 });
-
-
                             }
                         }
                     }
@@ -123,13 +108,8 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
         }
     }
 
-    println!("Сгенерировано комбинаций: {}", combinations.len());
     combinations
 }
-
-
-
-
 
 fn strategy_triple_growth(
     numbers: &Array1<f64>,
@@ -147,9 +127,6 @@ fn strategy_triple_growth(
     let mut balance = initial_balance;
     let mut max_balance = initial_balance;
 
-
-
-    // Предварительная проверка возможности выполнения серии ставок
     let mut test_balance = initial_balance;
     let mut test_stake = if bet_type == 0 {
         stake
@@ -160,14 +137,11 @@ fn strategy_triple_growth(
     for i in 0..attempts {
         const EPSILON: f64 = 1e-6;
         if test_stake > test_balance * (1.0 + EPSILON) {
-
             return (initial_balance, initial_balance, 0, 0, 0, 0);
         }
         test_balance -= test_stake;
         test_stake *= multiplier;
     }
-
-
 
     let mut total_series = 0u32;
     let mut winning_series = 0u32;
@@ -177,17 +151,14 @@ fn strategy_triple_growth(
     let mut i = num_low;
 
     while i < len {
-
         if balance < stake && bet_type == 0 {
+            break;
+        }
+        if balance < initial_balance * (stake_percent / 100.0) && bet_type == 1 {
 
             break;
         }
-        if balance < initial_balance * (stake_percent / 100.0) && bet_type == 1 {  // Для процента
-            // Баланс слишком мал для процентной ставки
-            break;
-        }
 
-        // Остальная часть функции...
         let mut sequence_valid = true;
         for j in 0..num_low {
             if i <= j || numbers[i - j - 1] > search_threshold {
@@ -210,7 +181,6 @@ fn strategy_triple_growth(
                 };
 
                 if initial_bet > balance {
-
                     break;
                 }
 
@@ -233,8 +203,6 @@ fn strategy_triple_growth(
                         winning_series += 1;
                         consecutive_losses = 0;
                         max_balance = max_balance.max(balance);
-
-
                         break;
                     } else {
                         consecutive_losses += 1;
@@ -261,7 +229,9 @@ fn strategy_triple_growth(
         winning_series,
         consecutive_losses,
     )
-}pub fn optimize_parameters<F>(
+}
+
+pub fn optimize_parameters<F>(
     numbers: &Array1<f64>,
     params: &Params,
     progress_callback: F,
@@ -273,7 +243,6 @@ where
     let cuda_available = if params.use_gpu {
         check_cuda_availability()
     } else {
-        println!("GPU отключен в настройках.");
         false
     };
 
@@ -281,41 +250,31 @@ where
     let total_combinations = combinations.len();
 
     progress_callback(0, total_combinations);
-    println!("Всего комбинаций для обработки: {}", total_combinations);
+
     if combinations.len() <= 100 {
-        println!("Мало комбинаций, обрабатываем напрямую");
         let cpu_start = Instant::now();
         let results = process_cpu_combinations(&combinations, numbers, params, cancel_flag);
         return (results, Some(cpu_start.elapsed()), None);
     }
 
-    // Создаем общую очередь задач для CPU и GPU
     let shared_task_queue = Arc::new(ArrayQueue::new(total_combinations));
 
-    // Размер пакета данных для обработки - адаптируем под общее количество задач
     let batch_size = BATCH_SIZE.min(total_combinations / 20);
 
-    // Заполняем очередь пакетами задач
     let mut combination_index = 0;
     while combination_index < combinations.len() {
         let end_index = std::cmp::min(combination_index + batch_size, combinations.len());
         let batch = combinations[combination_index..end_index].to_vec();
-        // В очередь нужно поместить каждый пакет как отдельный элемент
+
         if shared_task_queue.push(batch).is_err() {
-            println!("Ошибка добавления пакета в очередь"); // Добавить логирование
             break;
         }
         combination_index = end_index;
     }
 
-
-
-    // Счетчик обработанных комбинаций (общий для CPU и GPU)
     let processed_count = Arc::new(AtomicUsize::new(0));
-    // Убираем неиспользуемую переменную, добавляя нижнее подчеркивание
-    let _progress_step = total_combinations / 100; // для обновления каждые 1%
+    let _progress_step = total_combinations / 100;
 
-    // Запускаем поток для отслеживания прогресса
     let progress_thread = {
         let processed_count_clone = Arc::clone(&processed_count);
         let cancel_flag_clone = Arc::clone(cancel_flag);
@@ -330,7 +289,6 @@ where
                 if now.duration_since(last_update) >= update_interval {
                     let total_done = processed_count_clone.load(Ordering::SeqCst);
 
-                    // Обновляем прогресс
                     progress_callback_clone(total_done, total_combinations);
                     last_update = now;
                 }
@@ -350,7 +308,6 @@ where
 
     let mut combined_results = Vec::new();
 
-    // Запускаем GPU-обработчик, если доступен
     let gpu_thread = if cuda_available {
         let task_queue_gpu = Arc::clone(&shared_task_queue);
         let processed_count_clone = Arc::clone(&processed_count);
@@ -374,7 +331,6 @@ where
         None
     };
 
-    // Запускаем CPU-обработчик
     let cpu_thread = {
         let task_queue_cpu = Arc::clone(&shared_task_queue);
         let processed_count_clone = Arc::clone(&processed_count);
@@ -394,25 +350,22 @@ where
         })
     };
 
-    // Переменные для отслеживания количества результатов
     let mut cpu_results_len = 0;
     let mut gpu_results_len = 0;
 
-    // Дожидаемся завершения потоков и собираем результаты
     if let Some(gpu_thread) = gpu_thread {
         if let Ok((results, time)) = gpu_thread.join() {
             gpu_results_len = results.len();
-            combined_results.extend(results);  // Сразу добавляем результаты в общий список
+            combined_results.extend(results);
             gpu_time = time;
         }
     }
 
     if let Ok((results, time)) = cpu_thread.join() {
         cpu_results_len = results.len();
-        combined_results.extend(results);  // Сразу добавляем результаты в общий список
+        combined_results.extend(results);
         cpu_time = time;
 
-        // Сортируем результаты по прибыли (или другим критериям)
         combined_results.sort_by(|a, b| {
             b.profit.partial_cmp(&a.profit)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -420,21 +373,9 @@ where
                 .then_with(|| a.num_low.cmp(&b.num_low))
         });
 
-        // Ограничиваем количество результатов
         let max_results: usize = params.max_results.parse().unwrap_or(10000);
         combined_results.truncate(max_results);
 
-        println!("\nСтатистика выполнения:");
-        println!("CPU время: {:?}", cpu_time);
-        println!("GPU время: {:?}", gpu_time);
-        println!(
-            "Найдено стратегий: {} (CPU: {}, GPU: {})",
-            combined_results.len(),
-            cpu_results_len,
-            gpu_results_len
-        );
-
-        // Дожидаемся завершения потока прогресса
         if let Ok(_) = progress_thread.join() {
             progress_callback(total_combinations, total_combinations);
         }
@@ -444,6 +385,7 @@ where
 
     (Vec::new(), None, None)
 }
+
 fn process_cpu_batches(
     task_queue: &Arc<ArrayQueue<Vec<ParameterCombination>>>,
     numbers: &Array1<f64>,
@@ -454,7 +396,6 @@ fn process_cpu_batches(
     let cpu_start = Instant::now();
     let mut cpu_results = Vec::new();
 
-    // Собираем все задачи из очереди в один список для последовательной обработки
     let mut all_combinations = Vec::new();
     while let Some(batch) = task_queue.pop() {
         if cancel_flag.load(Ordering::SeqCst) {
@@ -463,26 +404,21 @@ fn process_cpu_batches(
         all_combinations.extend(batch);
     }
 
-    for (idx, combo) in all_combinations.iter().enumerate() {
+    for (_, combo) in all_combinations.iter().enumerate() {
         if cancel_flag.load(Ordering::SeqCst) {
             break;
         }
 
-
-
-        // Проверяем комбинацию напрямую, без использования пула потоков
         if let Some(result) = process_single_combination(combo, numbers, params) {
             cpu_results.push(result);
-
         }
 
-        // Обновляем счетчик прогресса после каждой комбинации
         processed_count.fetch_add(1, Ordering::SeqCst);
     }
 
-    println!("Последовательная обработка завершена. Найдено {} прибыльных стратегий.", cpu_results.len());
     (cpu_results, cpu_start.elapsed())
 }
+
 fn process_gpu_batches(
     task_queue: &Arc<ArrayQueue<Vec<ParameterCombination>>>,
     numbers: &Array1<f64>,
@@ -513,19 +449,16 @@ fn process_gpu_batches(
         let function = module.get_function(&kernel_name).unwrap();
         let bet_type = if params.bet_type == "fixed" { 0 } else { 1 };
 
-        // Рассчитываем размер shared memory
         let shared_mem_size = std::cmp::min(
-            numbers.len() * size_of::<f64>(),
-            4096 * size_of::<f64>()
+            numbers.len() * std::mem::size_of::<f64>(),
+            4096 * std::mem::size_of::<f64>()
         );
 
-        // Обрабатываем задачи из очереди
         while let Some(batch) = task_queue.pop() {
             if cancel_flag.load(Ordering::SeqCst) {
                 return (gpu_results, gpu_start.elapsed());
             }
 
-            // Подготавливаем данные для GPU
             let params_array: Vec<f64> = batch
                 .iter()
                 .flat_map(|combo| {
@@ -554,16 +487,13 @@ fn process_gpu_batches(
                 batch.len()
             ];
 
-            // Копируем данные на GPU
             let mut d_numbers = DeviceBuffer::from_slice(numbers_slice).unwrap();
             let mut d_params = DeviceBuffer::from_slice(&params_array).unwrap();
             let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer).unwrap();
 
-            // Вычисляем параметры запуска ядра
             let num_blocks = (batch.len() as u32 + block_size - 1) / block_size;
             let actual_grid_size = std::cmp::min(num_blocks, grid_size);
 
-            // Запускаем ядро
             launch!(function<<<(actual_grid_size, 1, 1), (block_size, 1, 1), shared_mem_size as u32, stream>>>(
                 d_numbers.as_device_ptr(),
                 d_params.as_device_ptr(),
@@ -577,11 +507,9 @@ fn process_gpu_batches(
 
             stream.synchronize().unwrap();
 
-            // Копируем результаты обратно с GPU
             let mut batch_results = gpu_results_buffer;
             d_results.copy_to(&mut batch_results).unwrap();
 
-            // Преобразуем результаты GPU в формат OptimizationResult
             let batch_results = batch_results
                 .into_iter()
                 .zip(batch.iter())
@@ -610,7 +538,6 @@ fn process_gpu_batches(
                     }
                 });
 
-            // Добавляем результаты и обновляем счетчик прогресса
             gpu_results.extend(batch_results);
             processed_count.fetch_add(batch.len(), Ordering::SeqCst);
         }
@@ -618,78 +545,60 @@ fn process_gpu_batches(
 
     (gpu_results, gpu_start.elapsed())
 }
+
 fn process_cpu_combinations(
     combinations: &[ParameterCombination],
     numbers: &Array1<f64>,
     params: &Params,
     cancel_flag: &Arc<AtomicBool>
 ) -> Vec<OptimizationResult> {
-    // Проверяем флаг отмены в начале функции
+
     if cancel_flag.load(Ordering::SeqCst) {
         return Vec::new();
     }
 
-    println!("Начинаем последовательную обработку {} комбинаций...", combinations.len());
-
-
     let mut results = Vec::new();
-    for (idx, combo) in combinations.iter().enumerate() {
+    for combo in combinations.iter() {
         if cancel_flag.load(Ordering::SeqCst) {
             break;
         }
 
-
-
         if let Some(result) = process_combination(combo, numbers, params) {
             results.push(result);
-
         }
     }
 
-    println!("Обработка завершена. Найдено {} прибыльных стратегий.", results.len());
     results
 }
 
-//noinspection ALL
 fn process_combination(
     combo: &ParameterCombination,
     numbers: &Array1<f64>,
     params: &Params,
 ) -> Option<OptimizationResult> {
-
-
     let stake_value = if params.bet_type == "fixed" {
         params.stake
     } else {
         0.0
     };
 
-    // Проверка возможности выполнить максимальное количество ставок с увеличенным допуском
     let initial_bet = if params.bet_type == "fixed" {
         params.stake
     } else {
         params.initial_balance * (combo.stake_percent / 100.0)
     };
 
-
-
-
     const EPSILON: f64 = 1e-6;
     let mut test_balance = params.initial_balance;
     let mut test_stake = initial_bet;
 
-    for i in 0..combo.attempts {
+    for _ in 0..combo.attempts {
         if test_stake > test_balance * (1.0 + EPSILON) {
-
             return None;
         }
         test_balance -= test_stake;
         test_stake *= combo.multiplier;
-
     }
-
-    println!("  Предварительная проверка ПРОЙДЕНА. Запуск полного расчета...");
-
 
     let (balance, max_balance, total_bets, total_series, winning_series, _) =
         strategy_triple_growth(
@@ -705,8 +614,6 @@ fn process_combination(
             combo.stake_percent,
             combo.attempts as u32,
         );
-
-
 
     if total_series > 0 && balance > params.initial_balance * (1.0 + EPSILON) {
         Some(OptimizationResult {
@@ -752,21 +659,18 @@ fn process_single_combination(
         params.initial_balance * (combo.stake_percent / 100.0)
     };
 
-
     const EPSILON: f64 = 1e-6;
     let mut test_balance = params.initial_balance;
     let mut test_stake = initial_bet;
 
-    for i in 0..combo.attempts {
+    for _ in 0..combo.attempts {
         if test_stake > test_balance * (1.0 + EPSILON) {
-
             return None;
         }
         test_balance -= test_stake;
         test_stake *= combo.multiplier;
     }
 
-    // Если предварительная проверка пройдена, выполняем основной расчет
     let (balance, max_balance, total_bets, total_series, winning_series, _) =
         strategy_triple_growth_isolated(
             &numbers_copy,
@@ -781,7 +685,6 @@ fn process_single_combination(
             combo.stake_percent,
             combo.attempts as u32
         );
-
 
     if total_series > 0 && balance > params.initial_balance * (1.0 + EPSILON) {
         Some(OptimizationResult {
@@ -807,7 +710,6 @@ fn process_single_combination(
     }
 }
 
-
 fn strategy_triple_growth_isolated(
     numbers: &Array1<f64>,
     stake: f64,
@@ -830,7 +732,6 @@ fn strategy_triple_growth_isolated(
     let len = numbers.len();
     let mut i = num_low;
 
-    // Тщательно проходим по всем числам, соблюдая оригинальную логику
     while i < len {
         let mut sequence_valid = true;
         for j in 0..num_low {

@@ -18,7 +18,6 @@ pub fn load_data_from_file(path: &str) -> io::Result<(Array1<f64>, Option<String
     let mut valid_numbers = 0;
     let mut invalid_lines = Vec::new();
 
-    // Используем memory mapping для больших файлов (больше 50 МБ)
     if file_size > 50 * 1024 * 1024 {
         println!("Используем memory mapping для большого файла: {} МБ", file_size / (1024 * 1024));
 
@@ -53,8 +52,8 @@ pub fn load_data_from_file(path: &str) -> io::Result<(Array1<f64>, Option<String
             }
         }
     } else {
-        // Для небольших файлов используем обычное построчное чтение
-        let reader = BufReader::with_capacity(256 * 1024, file); // Увеличенный буфер для чтения
+
+        let reader = BufReader::with_capacity(256 * 1024, file);
 
         for (i, line) in reader.lines().enumerate() {
             let line = line?;
@@ -80,7 +79,7 @@ pub fn load_data_from_file(path: &str) -> io::Result<(Array1<f64>, Option<String
 
     if !invalid_lines.is_empty() {
         let total_errors = invalid_lines.len();
-        // Ограничиваем количество отображаемых ошибок
+
         let errors_to_show = invalid_lines.iter().take(20).cloned().collect::<Vec<_>>();
         error_msg = Some(format!(
             "Найдено {} ошибок при загрузке данных{}:\n{}",
@@ -112,10 +111,9 @@ pub fn save_detailed_calculation(
     let mut actual_total_series = 0;
     let mut actual_winning_series = 0;
 
-    // Оптимизация: предварительно выделяем строки для записи
-    let mut output = String::with_capacity(1024 * 1024); // Выделяем 1 МБ буфера
+    let mut output = String::with_capacity(1024 * 1024);
 
-    const MAX_DETAILED_ROWS: usize = 10000;
+    const MAX_DETAILED_ROWS: usize = 500;
 
     output.push_str("=== Детальный расчет для лучшей стратегии ===\n\n");
     output.push_str("Параметры стратегии:\n");
@@ -150,7 +148,6 @@ pub fn save_detailed_calculation(
 
     let mut last_print_index = 0;
 
-    // Структура для ускорения формирования таблицы
     struct RowData {
         index: usize,
         number: f64,

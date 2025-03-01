@@ -13,9 +13,6 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-
-
-// Перечисление для передачи сообщений между потоками
 enum OptimizationMessage {
     Progress(f32),
     LoadStats(std::time::Duration),
@@ -36,7 +33,6 @@ pub struct OptimizationApp {
     cancel_flag: Arc<AtomicBool>,
 }
 
-// Структура для отслеживания производительности
 #[derive(Default)]
 struct PerformanceStats {
     cpu_time: Option<std::time::Duration>,
@@ -62,7 +58,6 @@ impl OptimizationApp {
         }
     }
 
-    //noinspection ALL
     fn format_number(num: f64) -> String {
         if num < 10000.0 {
             format!("{:.2}", num)
@@ -83,7 +78,7 @@ impl OptimizationApp {
         }
     }
         fn save_results(&self) -> io::Result<()> {
-            // Добавьте проверку и очистку
+
             println!("Сохранение {} результатов от текущего запуска ({})",
                      self.results.len(),
                      Local::now().format("%Y-%m-%d %H:%M:%S"));
@@ -112,7 +107,6 @@ impl OptimizationApp {
             writeln!(file, "Время выполнения: {:?}", start.elapsed())?;
         }
 
-        // Добавляем информацию о производительности
         if let Some(load_time) = self.performance_stats.load_time {
             writeln!(file, "Время загрузки данных: {:?}", load_time)?;
         }
@@ -153,7 +147,7 @@ impl OptimizationApp {
             "Диапазон чисел для поиска: {} - {}",
             self.settings.min_num_low, self.settings.max_num_low
         )?;
-            // Добавить после вывода других диапазонов
+
             writeln!(
                 file,
                 "Диапазон порога поиска: {} - {}",
@@ -176,7 +170,6 @@ impl OptimizationApp {
             self.settings.min_attempts_count, self.settings.max_attempts_count
         )?;
 
-        // Добавляем информацию о настройках оптимизации
         if self.settings.use_gpu == "true" {
             writeln!(file, "Использование GPU: Да")?;
             writeln!(file, "Размер блока CUDA: {}", self.settings.block_size)?;
@@ -216,7 +209,7 @@ impl OptimizationApp {
 
         Ok(())
     }
-    //noinspection ALL
+
     fn run_optimization(&mut self) {
         if let Err(e) = save_settings(&self.settings, "settings.json") {
             self.status = format!("Ошибка сохранения настроек: {}", e);
@@ -235,17 +228,15 @@ impl OptimizationApp {
         self.progress = 0.0;
         self.performance_stats = PerformanceStats::default();
 
-        // 1. Клонируем все необходимые данные до создания потока
         let settings_clone = self.settings.clone();
         let cancel_flag_clone = Arc::clone(&self.cancel_flag);
 
-        // 2. Создаем каналы для обмена сообщениями
         let (sender, receiver) = mpsc::channel();
         self.message_receiver = Some(receiver);
         let sender_clone = sender.clone();
 
         thread::spawn(move || {
-            // Загрузка данных с замером времени
+
             let load_start = Instant::now();
             let data_result = load_data_from_file(&settings_clone.file_path);
             let load_time = load_start.elapsed();
@@ -257,7 +248,6 @@ impl OptimizationApp {
                         return;
                     }
 
-                    // 3. Используем клонированные данные для создания параметров
                     let params = Params {
                         stake: settings_clone.stake.parse().unwrap_or(1.0),
                         min_multiplier: settings_clone.min_multiplier.parse().unwrap_or(1.67),
@@ -278,14 +268,13 @@ impl OptimizationApp {
                         max_attempts_count: settings_clone.max_attempts_count.parse().unwrap_or(4),
                         numbers,
                         max_results: settings_clone.max_results.clone(),
-                        // 4. Парсим число потоков и use_gpu из клонированных настроек
+
                         cpu_threads: settings_clone.cpu_threads.parse().unwrap_or(num_cpus::get()),
                         use_gpu: settings_clone.use_gpu == "true",
                     };
 
                     sender_clone.send(OptimizationMessage::LoadStats(load_time)).unwrap();
 
-                    // Создаем функцию обратного вызова для отслеживания прогресса
                     let progress_sender = sender_clone.clone();
                     let cancel_flag_for_callback = Arc::clone(&cancel_flag_clone);
 
@@ -302,9 +291,8 @@ impl OptimizationApp {
                         &cancel_flag_clone
                     );
 
-                    // Вычисляем статистику производительности
                     let combinations = if let Some(_) = results.first() {
-                        // Примерная оценка числа комбинаций
+
                         (params.max_num_low - params.min_num_low + 1) *
                             ((params.max_search_threshold - params.min_search_threshold) / 0.1) as usize *
                             ((params.max_multiplier - params.min_multiplier) / 0.1) as usize
@@ -327,7 +315,6 @@ impl OptimizationApp {
                         0.0
                     };
 
-                    // Если флаг отмены не установлен, отправляем результаты
                     if !cancel_flag_clone.load(Ordering::SeqCst) {
                         sender_clone.send(OptimizationMessage::Complete(
                             results, cpu_time, gpu_time, combinations, per_second
@@ -340,7 +327,6 @@ impl OptimizationApp {
             }
         });
 
-        // Сохраняем отправителя для возможных обновлений из UI
         self.message_sender = Some(sender);
     }
 
@@ -353,12 +339,10 @@ impl OptimizationApp {
             ui.label(&self.status);
         });
 
-        // Отображаем прогресс-бар
         if self.is_running {
             ui.add(egui::ProgressBar::new(self.progress).show_percentage());
         }
 
-        // Отображаем статистику производительности, если доступна
         if self.performance_stats.combinations > 0 {
             ui.group(|ui| {
                 ui.heading("Статистика производительности");
@@ -398,9 +382,9 @@ impl OptimizationApp {
     }
 }
 impl eframe::App for OptimizationApp {
-    //noinspection ALL
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Отрисовка основного пользовательского интерфейса
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Настройки оптимизации");
 
@@ -504,7 +488,6 @@ impl eframe::App for OptimizationApp {
                 });
             });
 
-            // Добавляем новую группу настроек для оптимизации GPU
             ui.group(|ui| {
                 ui.heading("Настройки оптимизации");
                 ui.horizontal(|ui| {
@@ -561,7 +544,7 @@ impl eframe::App for OptimizationApp {
                 }
 
                 if self.is_running && ui.button("Прервать").clicked() {
-                    // Устанавливаем флаг отмены
+
                     self.cancel_flag.store(true, Ordering::SeqCst);
                     self.is_running = false;
                     self.status = "Оптимизация прервана".to_string();
@@ -608,13 +591,12 @@ impl eframe::App for OptimizationApp {
             self.display_status(ui);
         });
 
-        // Проверяем сообщения от фонового потока
         if self.is_running {
             if let Some(receiver) = &self.message_receiver {
                 match receiver.try_recv() {
                     Ok(message) => match message {
                         OptimizationMessage::Progress(progress) => {
-                          //  println!("Получен прогресс: {:.1}%", progress * 100.0);
+
                             self.progress = progress;
                         },
                         OptimizationMessage::LoadStats(duration) => {
@@ -629,7 +611,6 @@ impl eframe::App for OptimizationApp {
                             self.is_running = false;
                             self.status = format!("Оптимизация завершена! Найдено {} прибыльных комбинаций.", self.results.len());
 
-                            // Сохраняем результаты
                             if let Err(e) = self.save_results() {
                                 self.status = format!("Ошибка сохранения результатов: {}", e);
                             }
@@ -640,10 +621,10 @@ impl eframe::App for OptimizationApp {
                         }
                     },
                     Err(mpsc::TryRecvError::Empty) => {
-                        // Нет новых сообщений, это нормально
+
                     },
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        // Отправитель отключен, завершаем расчет
+
                         println!("Канал сообщений отключен");
                         self.is_running = false;
                         if self.results.is_empty() {
@@ -653,7 +634,6 @@ impl eframe::App for OptimizationApp {
                 }
             }
 
-            // Запрашиваем обновление UI для проверки сообщений
             ctx.request_repaint();
         }
     }

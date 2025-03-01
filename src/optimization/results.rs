@@ -24,7 +24,7 @@ impl OptimizationResult {
 
         //noinspection ALL
         fn format_number(num: f64) -> String {
-            if num < 10000.0 {
+            if num < 1000000.0 {
                 format!("{:.2}", num)
             } else {
                 let exp = num.abs().log10().floor();
