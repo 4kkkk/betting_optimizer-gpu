@@ -147,7 +147,7 @@ pub fn save_detailed_calculation(
     let mut max_balance = balance;
     let mut i = best_result.num_low;
 
-    let mut big_wins = 0;
+
     let mut last_print_index = 0;
 
     // Структура для ускорения формирования таблицы
@@ -272,11 +272,7 @@ pub fn save_detailed_calculation(
                         max_balance = max_balance.max(balance);
                         actual_winning_series += 1;
 
-                        if win > 100.0 {
-                            big_wins += 1;
-                            println!("Обнаружен крупный выигрыш #{}: на индексе {} сумма {:.2}",
-                                     big_wins, search_i + attempt + 1, win);
-                        }
+
 
                         if row_count < MAX_DETAILED_ROWS {
                             rows.push(RowData {
@@ -322,11 +318,7 @@ pub fn save_detailed_calculation(
         i += 1;
     }
 
-    println!("Расчет завершен. Начальный баланс: {:.2}, Конечный баланс: {:.2}",
-             best_result.initial_balance, balance);
-    println!("Всего ставок: {} (по алгоритму: {})", actual_total_bets, best_result.total_bets);
-    println!("Всего серий: {} (по алгоритму: {})", actual_total_series, best_result.total_series);
-    println!("Выигрышных серий: {} (по алгоритму: {})", actual_winning_series, best_result.winning_series);
+
 
     for row in rows {
         output.push_str(&format!(

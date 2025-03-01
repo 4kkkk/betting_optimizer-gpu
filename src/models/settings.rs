@@ -23,14 +23,12 @@ pub struct Settings {
     pub max_balance_threshold: String,
     pub series_win_rate_threshold: String,
     pub max_results: String,
-    // Новые настройки для оптимизации GPU
     pub gpu_memory_limit: String,
     pub batch_size: String,
     pub use_gpu: String,
     pub use_shared_memory: String,
     pub block_size: String,
     pub grid_size: String,
-    // Параметры для оптимизации процессора
     pub cpu_threads: String,
     pub optimize_for_i7: String,
 }

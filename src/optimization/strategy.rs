@@ -1,9 +1,7 @@
 use crate::optimization::cuda::check_cuda_availability;
 use crate::optimization::{OptimizationResult, Params};
-use core_affinity;
 use crossbeam::queue::ArrayQueue;
 use ndarray::Array1;
-use rayon::prelude::*;
 use rustacuda::launch;
 use rustacuda::memory::DeviceBuffer;
 use rustacuda::prelude::*;
@@ -12,9 +10,7 @@ use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
-use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
-};
+
 
 // Оптимизация для i7-13700KF (24 потока)
 // RTX 3060 поддерживает до 1024 потоков в блоке
@@ -57,12 +53,11 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
     let max_mult_int = (params.max_multiplier * PRECISION as f64) as i32;
     let step_int = 1; // Шаг 0.1 при PRECISION = 10
 
-    println!("Диапазон множителей: {:.1}-{:.1} (в целых числах: {}-{})",
-             params.min_multiplier, params.max_multiplier, min_mult_int, max_mult_int);
+
 
     // Количество итераций для множителя (включая конечную точку)
     let mult_iterations = (max_mult_int - min_mult_int) / step_int + 1;
-    println!("Итераций по множителю: {}", mult_iterations);
+
 
     for num_low in params.min_num_low..=params.max_num_low {
         // Аналогично преобразуем другие параметры
@@ -78,8 +73,7 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
         let max_payout_int = (params.max_payout_threshold * PRECISION as f64) as i32;
         let payout_iterations = (max_payout_int - min_payout_int) / step_int + 1;
 
-        println!("Итераций: множитель={}, поиск={}, ожидание={}, ставка={}",
-                 mult_iterations, search_iterations, high_iterations, payout_iterations);
+
 
         // Генерируем комбинации, используя целочисленные индексы
         for m_idx in 0..mult_iterations {
@@ -120,8 +114,7 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
                                     attempts,
                                 });
 
-                                println!("Сгенерирована комбинация: множитель={:.1}, поиск={:.1}, ожидание={:.1}, ставка={:.1}",
-                                         multiplier, search_threshold, high_threshold, payout_threshold);
+
                             }
                         }
                     }
@@ -150,16 +143,11 @@ fn strategy_triple_growth(
     bet_type: i32,
     stake_percent: f64,
     attempts: u32,
-    log_enabled: bool,
 ) -> (f64, f64, u32, u32, u32, u32) {
     let mut balance = initial_balance;
     let mut max_balance = initial_balance;
 
-    // Добавляем более строгий режим логирования для отладки
-    if log_enabled {
-        println!("СТАРТ СТРАТЕГИИ: mult={:.1}, balance={:.2}, stake={:.2}, percent={:.2}%",
-                 multiplier, initial_balance, stake, stake_percent);
-    }
+
 
     // Предварительная проверка возможности выполнения серии ставок
     let mut test_balance = initial_balance;
@@ -172,19 +160,14 @@ fn strategy_triple_growth(
     for i in 0..attempts {
         const EPSILON: f64 = 1e-6;
         if test_stake > test_balance * (1.0 + EPSILON) {
-            if log_enabled {
-                println!("ПРОВЕРКА НЕ ПРОЙДЕНА на попытке {}: stake={:.6} > balance={:.6} (diff={})",
-                         i+1, test_stake, test_balance, test_stake - test_balance);
-            }
+
             return (initial_balance, initial_balance, 0, 0, 0, 0);
         }
         test_balance -= test_stake;
         test_stake *= multiplier;
     }
 
-    if log_enabled {
-        println!("ПРОВЕРКА ПРОЙДЕНА: баланс после всех проверочных ставок: {:.6}", test_balance);
-    }
+
 
     let mut total_series = 0u32;
     let mut winning_series = 0u32;
@@ -194,13 +177,9 @@ fn strategy_triple_growth(
     let mut i = num_low;
 
     while i < len {
-        if log_enabled && i % 500 == 0 {
-            println!("Strategy: индекс {}, баланс {:.2}", i, balance);
-        }
 
-        // Добавьте здесь проверку на минимальный баланс:
-        if balance < stake && bet_type == 0 {  // Для фиксированной ставки
-            // Баланс меньше минимальной ставки, дальнейшие расчеты бессмысленны
+        if balance < stake && bet_type == 0 {
+
             break;
         }
         if balance < initial_balance * (stake_percent / 100.0) && bet_type == 1 {  // Для процента
@@ -231,10 +210,7 @@ fn strategy_triple_growth(
                 };
 
                 if initial_bet > balance {
-                    if log_enabled {
-                        println!("Недостаточно средств на индексе {}. Баланс: {:.2}, требуется: {:.2}",
-                                 i, balance, initial_bet);
-                    }
+
                     break;
                 }
 
@@ -258,9 +234,7 @@ fn strategy_triple_growth(
                         consecutive_losses = 0;
                         max_balance = max_balance.max(balance);
 
-                        if log_enabled && win > 100.0 {
-                            println!("Strategy: крупный выигрыш на индексе {}, сумма {:.2}", current_i, win);
-                        }
+
                         break;
                     } else {
                         consecutive_losses += 1;
@@ -319,7 +293,7 @@ where
     let shared_task_queue = Arc::new(ArrayQueue::new(total_combinations));
 
     // Размер пакета данных для обработки - адаптируем под общее количество задач
-    let batch_size = (BATCH_SIZE).min(total_combinations / 20);
+    let batch_size = BATCH_SIZE.min(total_combinations / 20);
 
     // Заполняем очередь пакетами задач
     let mut combination_index = 0;
@@ -334,8 +308,7 @@ where
         combination_index = end_index;
     }
 
-    // Добавить диагностику
-    println!("Добавлено в очередь пакетов: {}", shared_task_queue.len());
+
 
     // Счетчик обработанных комбинаций (общий для CPU и GPU)
     let processed_count = Arc::new(AtomicUsize::new(0));
@@ -349,11 +322,11 @@ where
         let progress_callback_clone = progress_callback.clone();
 
         std::thread::spawn(move || {
-            let mut last_update = std::time::Instant::now();
+            let mut last_update = Instant::now();
             let update_interval = std::time::Duration::from_millis(100);
 
             while !cancel_flag_clone.load(Ordering::SeqCst) {
-                let now = std::time::Instant::now();
+                let now = Instant::now();
                 if now.duration_since(last_update) >= update_interval {
                     let total_done = processed_count_clone.load(Ordering::SeqCst);
 
@@ -490,23 +463,17 @@ fn process_cpu_batches(
         all_combinations.extend(batch);
     }
 
-    println!("Собрано {} комбинаций для последовательной обработки", all_combinations.len());
-
-    // Обрабатываем все комбинации последовательно
     for (idx, combo) in all_combinations.iter().enumerate() {
         if cancel_flag.load(Ordering::SeqCst) {
             break;
         }
 
-        println!("Обработка комбинации #{} из {}: множитель={:.1}",
-                 idx+1, all_combinations.len(), combo.multiplier);
+
 
         // Проверяем комбинацию напрямую, без использования пула потоков
         if let Some(result) = process_single_combination(combo, numbers, params) {
             cpu_results.push(result);
-            println!("✓ Комбинация #{} ПРОШЛА проверку", idx+1);
-        } else {
-            println!("✗ Комбинация #{} НЕ ПРОШЛА проверку", idx+1);
+
         }
 
         // Обновляем счетчик прогресса после каждой комбинации
@@ -548,8 +515,8 @@ fn process_gpu_batches(
 
         // Рассчитываем размер shared memory
         let shared_mem_size = std::cmp::min(
-            numbers.len() * std::mem::size_of::<f64>(),
-            4096 * std::mem::size_of::<f64>()
+            numbers.len() * size_of::<f64>(),
+            4096 * size_of::<f64>()
         );
 
         // Обрабатываем задачи из очереди
@@ -664,20 +631,18 @@ fn process_cpu_combinations(
 
     println!("Начинаем последовательную обработку {} комбинаций...", combinations.len());
 
-    // Последовательно обрабатываем каждую комбинацию для диагностики проблемы
+
     let mut results = Vec::new();
     for (idx, combo) in combinations.iter().enumerate() {
         if cancel_flag.load(Ordering::SeqCst) {
             break;
         }
 
-        println!("Обработка комбинации #{}: множитель={:.1}", idx+1, combo.multiplier);
+
 
         if let Some(result) = process_combination(combo, numbers, params) {
             results.push(result);
-            println!("  -> ПРОШЛА ПРОВЕРКУ!");
-        } else {
-            println!("  -> НЕ ПРОШЛА ПРОВЕРКУ!");
+
         }
     }
 
@@ -685,13 +650,13 @@ fn process_cpu_combinations(
     results
 }
 
+//noinspection ALL
 fn process_combination(
     combo: &ParameterCombination,
     numbers: &Array1<f64>,
     params: &Params,
 ) -> Option<OptimizationResult> {
-    println!("Детальная проверка комбинации: множитель={:.3}, поиск={:.2}, ставка={:.2}",
-             combo.multiplier, combo.search_threshold, combo.payout_threshold);
+
 
     let stake_value = if params.bet_type == "fixed" {
         params.stake
@@ -706,27 +671,26 @@ fn process_combination(
         params.initial_balance * (combo.stake_percent / 100.0)
     };
 
-    println!("  Начальная ставка: {:.6}, баланс: {:.2}", initial_bet, params.initial_balance);
 
-    // Увеличим допуск при сравнении и добавим более подробное логирование
+
+
     const EPSILON: f64 = 1e-6;
     let mut test_balance = params.initial_balance;
     let mut test_stake = initial_bet;
 
     for i in 0..combo.attempts {
         if test_stake > test_balance * (1.0 + EPSILON) {
-            println!("  Предварительная проверка НЕ ПРОЙДЕНА на попытке {}: stake={:.6} > balance={:.6} (diff={:.8})",
-                     i+1, test_stake, test_balance, test_stake - test_balance);
+
             return None;
         }
         test_balance -= test_stake;
         test_stake *= combo.multiplier;
-        println!("  Попытка {}: ставка стала {:.6}, баланс стал {:.6}", i+1, test_stake, test_balance);
+
     }
 
     println!("  Предварительная проверка ПРОЙДЕНА. Запуск полного расчета...");
 
-    // Если проверка прошла, продолжаем с основным расчетом с включенным логированием
+
     let (balance, max_balance, total_bets, total_series, winning_series, _) =
         strategy_triple_growth(
             numbers,
@@ -740,15 +704,10 @@ fn process_combination(
             if params.bet_type == "fixed" { 0 } else { 1 },
             combo.stake_percent,
             combo.attempts as u32,
-            true, // Включаем логирование
         );
 
-    // Логирование результатов для отладки
-    println!("Проверка комбинации: множитель={:.2}, поиск={:.2}, ставка={:.2}, результат={}",
-             combo.multiplier, combo.search_threshold, combo.payout_threshold,
-             if balance > params.initial_balance { "ПРИБЫЛЬ" } else { "УБЫТОК" });
 
-    // Фильтруем только прибыльные стратегии с приемлемым допуском
+
     if total_series > 0 && balance > params.initial_balance * (1.0 + EPSILON) {
         Some(OptimizationResult {
             num_low: combo.num_low,
@@ -772,15 +731,15 @@ fn process_combination(
         None
     }
 }
+
 fn process_single_combination(
     combo: &ParameterCombination,
     numbers: &Array1<f64>,
     params: &Params
 ) -> Option<OptimizationResult> {
-    // Создаем копию чисел для изоляции вычислений
+
     let numbers_copy = numbers.clone();
 
-    // Выполняем базовые проверки перед запуском основного алгоритма
     let stake_value = if params.bet_type == "fixed" {
         params.stake
     } else {
@@ -793,15 +752,14 @@ fn process_single_combination(
         params.initial_balance * (combo.stake_percent / 100.0)
     };
 
-    // Предварительная проверка возможности выполнить серию ставок
+
     const EPSILON: f64 = 1e-6;
     let mut test_balance = params.initial_balance;
     let mut test_stake = initial_bet;
 
     for i in 0..combo.attempts {
         if test_stake > test_balance * (1.0 + EPSILON) {
-            println!("  Множитель {:.1}: Предварительная проверка НЕ пройдена на попытке {} (ставка={:.6} > баланс={:.6})",
-                     combo.multiplier, i+1, test_stake, test_balance);
+
             return None;
         }
         test_balance -= test_stake;
@@ -824,10 +782,7 @@ fn process_single_combination(
             combo.attempts as u32
         );
 
-    println!("  Множитель {:.1}: Результат расчета: баланс={:.2}, прибыль={:.2}, серий={}, выигрыш={}",
-             combo.multiplier, balance, balance - params.initial_balance, total_series, winning_series);
 
-    // Проверяем, является ли стратегия прибыльной
     if total_series > 0 && balance > params.initial_balance * (1.0 + EPSILON) {
         Some(OptimizationResult {
             num_low: combo.num_low,
@@ -852,7 +807,7 @@ fn process_single_combination(
     }
 }
 
-// Изолированная версия strategy_triple_growth, которая не зависит от внешнего состояния
+
 fn strategy_triple_growth_isolated(
     numbers: &Array1<f64>,
     stake: f64,

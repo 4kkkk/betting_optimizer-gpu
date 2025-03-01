@@ -22,6 +22,7 @@ impl OptimizationResult {
     #[allow(dead_code)]
     pub fn to_string(&self) -> String {
 
+        //noinspection ALL
         fn format_number(num: f64) -> String {
             if num < 10000.0 {
                 format!("{:.2}", num)

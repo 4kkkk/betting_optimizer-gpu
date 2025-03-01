@@ -62,6 +62,7 @@ impl OptimizationApp {
         }
     }
 
+    //noinspection ALL
     fn format_number(num: f64) -> String {
         if num < 10000.0 {
             format!("{:.2}", num)
@@ -215,6 +216,7 @@ impl OptimizationApp {
 
         Ok(())
     }
+    //noinspection ALL
     fn run_optimization(&mut self) {
         if let Err(e) = save_settings(&self.settings, "settings.json") {
             self.status = format!("Ошибка сохранения настроек: {}", e);
@@ -396,6 +398,7 @@ impl OptimizationApp {
     }
 }
 impl eframe::App for OptimizationApp {
+    //noinspection ALL
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Отрисовка основного пользовательского интерфейса
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -563,77 +566,8 @@ impl eframe::App for OptimizationApp {
                     self.is_running = false;
                     self.status = "Оптимизация прервана".to_string();
                 }
-                if ui.button("Отладочная оптимизация").clicked() {
-                    self.status = "Запуск отладочной оптимизации...".to_string();
-                    self.is_running = true;
-                    self.cancel_flag.store(false, Ordering::SeqCst);
-                    self.start_time = Some(Instant::now());
-                    self.results.clear();
-                    self.progress = 0.0;
-                    self.performance_stats = PerformanceStats::default();
 
-                    // Создаем канал сообщений, если его еще нет
-                    if self.message_sender.is_none() {
-                        let (sender, receiver) = mpsc::channel();
-                        self.message_receiver = Some(receiver);
-                        self.message_sender = Some(sender);
-                    }
 
-                    let settings_clone = self.settings.clone();
-                    let sender = self.message_sender.clone().unwrap();
-
-                    thread::spawn(move || {
-                        let load_start = Instant::now();
-                        let data_result = load_data_from_file(&settings_clone.file_path);
-                        let load_time = load_start.elapsed();
-
-                        match data_result {
-                            Ok((numbers, error)) => {
-                                if let Some(err) = error {
-                                    sender.send(OptimizationMessage::Error(err)).unwrap();
-                                    return;
-                                }
-
-                                sender.send(OptimizationMessage::LoadStats(load_time)).unwrap();
-
-                                // Создаем параметры
-                                let params = Params {
-                                    stake: settings_clone.stake.parse().unwrap_or(1.0),
-                                    min_multiplier: settings_clone.min_multiplier.parse().unwrap_or(1.67),
-                                    max_multiplier: settings_clone.max_multiplier.parse().unwrap_or(1.67),
-                                    initial_balance: settings_clone.initial_balance.parse().unwrap_or(500.0),
-                                    min_num_low: settings_clone.min_num_low.parse().unwrap_or(2),
-                                    max_num_low: settings_clone.max_num_low.parse().unwrap_or(5),
-                                    min_payout_threshold: settings_clone.min_payout_threshold.parse().unwrap_or(2.5),
-                                    max_payout_threshold: settings_clone.max_payout_threshold.parse().unwrap_or(3.0),
-                                    bet_type: settings_clone.bet_type.clone(),
-                                    min_stake_percent: settings_clone.min_stake_percent.parse().unwrap_or(1.0),
-                                    max_stake_percent: settings_clone.max_stake_percent.parse().unwrap_or(1.0),
-                                    min_high_threshold: settings_clone.min_high_threshold.parse().unwrap_or(2.0),
-                                    max_high_threshold: settings_clone.max_high_threshold.parse().unwrap_or(5.0),
-                                    min_search_threshold: settings_clone.min_search_threshold.parse().unwrap_or(1.5),
-                                    max_search_threshold: settings_clone.max_search_threshold.parse().unwrap_or(5.0),
-                                    min_attempts_count: settings_clone.min_attempts_count.parse().unwrap_or(4),
-                                    max_attempts_count: settings_clone.max_attempts_count.parse().unwrap_or(4),
-                                    numbers,
-                                    max_results: settings_clone.max_results.clone(),
-                                    cpu_threads: settings_clone.cpu_threads.parse().unwrap_or(num_cpus::get()),
-                                    use_gpu: settings_clone.use_gpu == "true",
-                                };
-
-                                // Запускаем отладочную оптимизацию
-                                let (results, time) = crate::debug_optimizer::debug_optimize(&params);
-
-                                sender.send(OptimizationMessage::Complete(
-                                    results, Some(time), None, 0, 0.0
-                                )).unwrap();
-                            }
-                            Err(e) => {
-                                sender.send(OptimizationMessage::Error(e.to_string())).unwrap();
-                            }
-                        }
-                    });
-                }
             });
 
             ui.separator();
