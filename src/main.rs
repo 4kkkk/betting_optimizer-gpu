@@ -7,6 +7,7 @@ mod gui;
 mod models;
 mod optimization;
 mod utils;
+mod debug_optimizer;
 
 use crate::gui::OptimizationApp;
 use eframe::egui::ViewportBuilder;

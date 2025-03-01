@@ -82,20 +82,24 @@ impl OptimizationApp {
         }
     }
         fn save_results(&self) -> io::Result<()> {
-        fs::create_dir_all("results")?;
-        let input_filename = std::path::Path::new(&self.settings.file_path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("default")
-            .trim_end_matches(".txt");
+            // Добавьте проверку и очистку
+            println!("Сохранение {} результатов от текущего запуска ({})",
+                     self.results.len(),
+                     Local::now().format("%Y-%m-%d %H:%M:%S"));
 
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let base_filename = format!("{}_{}", input_filename, timestamp);
-        let results_filename = format!("results/{}_results.txt", base_filename);
-        let raschet_filename = format!("results/{}_raschet.txt", base_filename);
+            fs::create_dir_all("results")?;
+            let input_filename = std::path::Path::new(&self.settings.file_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("default")
+                .trim_end_matches(".txt");
 
-        let mut file = File::create(&results_filename)?;
+            let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+            let base_filename = format!("{}_{}", input_filename, timestamp);
+            let results_filename = format!("results/{}_results.txt", base_filename);
+            let raschet_filename = format!("results/{}_raschet.txt", base_filename);
 
+            let mut file = File::create(&results_filename)?;
         writeln!(file, "=== ПАРАМЕТРЫ ЗАПУСКА ===\n")?;
         writeln!(
             file,
@@ -148,7 +152,14 @@ impl OptimizationApp {
             "Диапазон чисел для поиска: {} - {}",
             self.settings.min_num_low, self.settings.max_num_low
         )?;
-        writeln!(
+            // Добавить после вывода других диапазонов
+            writeln!(
+                file,
+                "Диапазон порога поиска: {} - {}",
+                self.settings.min_search_threshold, self.settings.max_search_threshold
+            )?;
+
+            writeln!(
             file,
             "Диапазон порога для ставки: {} - {}",
             self.settings.min_payout_threshold, self.settings.max_payout_threshold
@@ -272,44 +283,49 @@ impl OptimizationApp {
 
                     sender_clone.send(OptimizationMessage::LoadStats(load_time)).unwrap();
 
+                    // Создаем функцию обратного вызова для отслеживания прогресса
                     let progress_sender = sender_clone.clone();
-                    // Создаем дополнительный клон специально для замыкания
                     let cancel_flag_for_callback = Arc::clone(&cancel_flag_clone);
 
                     let (results, cpu_time, gpu_time) = crate::optimization::strategy::optimize_parameters(
                         &params.numbers,
                         &params,
                         move |current, total| {
-                            if cancel_flag_for_callback.load(Ordering::SeqCst) { // используем cancel_flag_for_callback
+                            if cancel_flag_for_callback.load(Ordering::SeqCst) {
                                 return;
                             }
                             let progress = if total > 0 { current as f32 / total as f32 } else { 0.0 };
                             progress_sender.send(OptimizationMessage::Progress(progress)).unwrap_or_default();
                         },
-                        &cancel_flag_clone // cancel_flag_clone остается доступной
+                        &cancel_flag_clone
                     );
-
-
-
-
 
                     // Вычисляем статистику производительности
                     let combinations = if let Some(_) = results.first() {
                         // Примерная оценка числа комбинаций
                         (params.max_num_low - params.min_num_low + 1) *
-                        ((params.max_search_threshold - params.min_search_threshold) / 0.1) as usize *
-                        ((params.max_multiplier - params.min_multiplier) / 0.1) as usize
+                            ((params.max_search_threshold - params.min_search_threshold) / 0.1) as usize *
+                            ((params.max_multiplier - params.min_multiplier) / 0.1) as usize
                     } else {
                         0
                     };
 
-                    let per_second = if load_time.as_secs_f64() > 0.0 {
-                        combinations as f64 / load_time.as_secs_f64()
+                    let per_second = if let Some(total_time) = match (cpu_time, gpu_time) {
+                        (Some(cpu), Some(gpu)) => Some(cpu.max(gpu)),
+                        (Some(cpu), None) => Some(cpu),
+                        (None, Some(gpu)) => Some(gpu),
+                        _ => None,
+                    } {
+                        if total_time.as_secs_f64() > 0.0 {
+                            combinations as f64 / total_time.as_secs_f64()
+                        } else {
+                            0.0
+                        }
                     } else {
                         0.0
                     };
 
-                    // Если флаг отмены установлен, не отправляем результаты
+                    // Если флаг отмены не установлен, отправляем результаты
                     if !cancel_flag_clone.load(Ordering::SeqCst) {
                         sender_clone.send(OptimizationMessage::Complete(
                             results, cpu_time, gpu_time, combinations, per_second
@@ -324,7 +340,10 @@ impl OptimizationApp {
 
         // Сохраняем отправителя для возможных обновлений из UI
         self.message_sender = Some(sender);
-    }        fn display_status(&self, ui: &mut egui::Ui) {
+    }
+
+
+    fn display_status(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if self.is_running {
                 ui.spinner();
@@ -543,6 +562,77 @@ impl eframe::App for OptimizationApp {
                     self.cancel_flag.store(true, Ordering::SeqCst);
                     self.is_running = false;
                     self.status = "Оптимизация прервана".to_string();
+                }
+                if ui.button("Отладочная оптимизация").clicked() {
+                    self.status = "Запуск отладочной оптимизации...".to_string();
+                    self.is_running = true;
+                    self.cancel_flag.store(false, Ordering::SeqCst);
+                    self.start_time = Some(Instant::now());
+                    self.results.clear();
+                    self.progress = 0.0;
+                    self.performance_stats = PerformanceStats::default();
+
+                    // Создаем канал сообщений, если его еще нет
+                    if self.message_sender.is_none() {
+                        let (sender, receiver) = mpsc::channel();
+                        self.message_receiver = Some(receiver);
+                        self.message_sender = Some(sender);
+                    }
+
+                    let settings_clone = self.settings.clone();
+                    let sender = self.message_sender.clone().unwrap();
+
+                    thread::spawn(move || {
+                        let load_start = Instant::now();
+                        let data_result = load_data_from_file(&settings_clone.file_path);
+                        let load_time = load_start.elapsed();
+
+                        match data_result {
+                            Ok((numbers, error)) => {
+                                if let Some(err) = error {
+                                    sender.send(OptimizationMessage::Error(err)).unwrap();
+                                    return;
+                                }
+
+                                sender.send(OptimizationMessage::LoadStats(load_time)).unwrap();
+
+                                // Создаем параметры
+                                let params = Params {
+                                    stake: settings_clone.stake.parse().unwrap_or(1.0),
+                                    min_multiplier: settings_clone.min_multiplier.parse().unwrap_or(1.67),
+                                    max_multiplier: settings_clone.max_multiplier.parse().unwrap_or(1.67),
+                                    initial_balance: settings_clone.initial_balance.parse().unwrap_or(500.0),
+                                    min_num_low: settings_clone.min_num_low.parse().unwrap_or(2),
+                                    max_num_low: settings_clone.max_num_low.parse().unwrap_or(5),
+                                    min_payout_threshold: settings_clone.min_payout_threshold.parse().unwrap_or(2.5),
+                                    max_payout_threshold: settings_clone.max_payout_threshold.parse().unwrap_or(3.0),
+                                    bet_type: settings_clone.bet_type.clone(),
+                                    min_stake_percent: settings_clone.min_stake_percent.parse().unwrap_or(1.0),
+                                    max_stake_percent: settings_clone.max_stake_percent.parse().unwrap_or(1.0),
+                                    min_high_threshold: settings_clone.min_high_threshold.parse().unwrap_or(2.0),
+                                    max_high_threshold: settings_clone.max_high_threshold.parse().unwrap_or(5.0),
+                                    min_search_threshold: settings_clone.min_search_threshold.parse().unwrap_or(1.5),
+                                    max_search_threshold: settings_clone.max_search_threshold.parse().unwrap_or(5.0),
+                                    min_attempts_count: settings_clone.min_attempts_count.parse().unwrap_or(4),
+                                    max_attempts_count: settings_clone.max_attempts_count.parse().unwrap_or(4),
+                                    numbers,
+                                    max_results: settings_clone.max_results.clone(),
+                                    cpu_threads: settings_clone.cpu_threads.parse().unwrap_or(num_cpus::get()),
+                                    use_gpu: settings_clone.use_gpu == "true",
+                                };
+
+                                // Запускаем отладочную оптимизацию
+                                let (results, time) = crate::debug_optimizer::debug_optimize(&params);
+
+                                sender.send(OptimizationMessage::Complete(
+                                    results, Some(time), None, 0, 0.0
+                                )).unwrap();
+                            }
+                            Err(e) => {
+                                sender.send(OptimizationMessage::Error(e.to_string())).unwrap();
+                            }
+                        }
+                    });
                 }
             });
 

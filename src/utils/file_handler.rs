@@ -6,7 +6,7 @@ use std::io::{self, BufRead, BufReader};
 use std::time::Instant;
 use memmap2::MmapOptions;
 
-const MAX_DETAILED_ROWS: usize = 500;
+const MAX_DETAILED_ROWS: usize = 5000;
 
 pub fn load_data_from_file(path: &str) -> io::Result<(Array1<f64>, Option<String>)> {
     println!("Загрузка данных из файла: {}", path);
@@ -108,9 +108,14 @@ pub fn save_detailed_calculation(
     let start = Instant::now();
     let mut file = File::create(filename)?;
     let mut row_count = 0;
+    let mut actual_total_bets = 0;
+    let mut actual_total_series = 0;
+    let mut actual_winning_series = 0;
 
     // Оптимизация: предварительно выделяем строки для записи
     let mut output = String::with_capacity(1024 * 1024); // Выделяем 1 МБ буфера
+
+    const MAX_DETAILED_ROWS: usize = 10000;
 
     output.push_str("=== Детальный расчет для лучшей стратегии ===\n\n");
     output.push_str("Параметры стратегии:\n");
@@ -133,14 +138,17 @@ pub fn save_detailed_calculation(
 
     output.push_str("Пошаговый расчет:\n\n");
     output.push_str(&format!(
-        "{:<5} {:<10} {:<10} {:<10} {:<15} {:<15} {:<10}\n",
-        "i", "Число", "Ставка", "Выигрыш", "Баланс", "Макс.баланс", "Действие"
+        "{:<5} {:<10} {:<10} {:<10} {:<15} {:<15} {:<10} {:<10}\n",
+        "i", "Число", "Ставка", "Выигрыш", "Баланс", "Макс.баланс", "Действие", "Проверка"
     ));
-    output.push_str(&format!("{}\n", "-".repeat(75)));
+    output.push_str(&format!("{}\n", "-".repeat(85)));
 
     let mut balance = best_result.initial_balance;
     let mut max_balance = balance;
     let mut i = best_result.num_low;
+
+    let mut big_wins = 0;
+    let mut last_print_index = 0;
 
     // Структура для ускорения формирования таблицы
     struct RowData {
@@ -151,11 +159,18 @@ pub fn save_detailed_calculation(
         balance: f64,
         max_balance: f64,
         action: &'static str,
+        check_info: String,
     }
 
     let mut rows = Vec::with_capacity(MAX_DETAILED_ROWS);
 
     while i < numbers.len() {
+        if i - last_print_index > 1000 {
+            println!("Прогресс: обработано {}/{} чисел, текущий баланс: {:.2}",
+                     i, numbers.len(), balance);
+            last_print_index = i;
+        }
+
         let mut sequence_valid = true;
 
         for j in 0..best_result.num_low {
@@ -175,6 +190,7 @@ pub fn save_detailed_calculation(
                     balance,
                     max_balance,
                     action: "Поиск",
+                    check_info: String::new(),
                 });
                 row_count += 1;
             } else if row_count == MAX_DETAILED_ROWS {
@@ -193,6 +209,7 @@ pub fn save_detailed_calculation(
                         balance,
                         max_balance,
                         action: "Ожидание",
+                        check_info: String::new(),
                     });
                     row_count += 1;
                 } else if row_count == MAX_DETAILED_ROWS {
@@ -203,23 +220,63 @@ pub fn save_detailed_calculation(
             }
 
             if search_i < numbers.len() && numbers[search_i] >= best_result.high_threshold {
+                actual_total_series += 1;
+
                 let mut current_stake = if best_result.bet_type == "fixed" {
                     best_result.initial_stake
                 } else {
                     balance * (best_result.stake_percent / 100.0)
                 };
 
+                let min_stake = if best_result.bet_type == "fixed" {
+                    best_result.initial_stake
+                } else {
+                    balance * (best_result.stake_percent / 100.0)
+                };
+
+                let can_continue = if best_result.bet_type == "fixed" {
+                    balance >= min_stake
+                } else {
+                    balance > 0.0
+                };
+
+                if !can_continue {
+                    if row_count < MAX_DETAILED_ROWS {
+                        rows.push(RowData {
+                            index: search_i,
+                            number: numbers[search_i],
+                            stake: "-".to_string(),
+                            win: "-".to_string(),
+                            balance,
+                            max_balance,
+                            action: "Недостаточно средств",
+                            check_info: format!("Требуется: {:.2}", min_stake),
+                        });
+                        row_count += 1;
+                    }
+                    i = search_i + 1;
+                    continue;
+                }
+
                 for attempt in 0..=best_result.attempts-1 {
-                    if current_stake > balance {
+                    if current_stake > balance || search_i + attempt + 1 >= numbers.len() {
                         break;
                     }
 
                     balance -= current_stake;
+                    actual_total_bets += 1;
 
                     if numbers[search_i + attempt + 1] >= best_result.payout_threshold {
                         let win = current_stake * best_result.payout_threshold;
                         balance += win;
                         max_balance = max_balance.max(balance);
+                        actual_winning_series += 1;
+
+                        if win > 100.0 {
+                            big_wins += 1;
+                            println!("Обнаружен крупный выигрыш #{}: на индексе {} сумма {:.2}",
+                                     big_wins, search_i + attempt + 1, win);
+                        }
 
                         if row_count < MAX_DETAILED_ROWS {
                             rows.push(RowData {
@@ -230,6 +287,7 @@ pub fn save_detailed_calculation(
                                 balance,
                                 max_balance,
                                 action: "Выигрыш",
+                                check_info: format!("Коэф: {:.2}", numbers[search_i + attempt + 1]),
                             });
                             row_count += 1;
                         } else if row_count == MAX_DETAILED_ROWS {
@@ -247,6 +305,7 @@ pub fn save_detailed_calculation(
                                 balance,
                                 max_balance,
                                 action: "Проигрыш",
+                                check_info: format!("Коэф: {:.2}", numbers[search_i + attempt + 1]),
                             });
                             row_count += 1;
                         } else if row_count == MAX_DETAILED_ROWS {
@@ -263,11 +322,16 @@ pub fn save_detailed_calculation(
         i += 1;
     }
 
-    // Форматирование и запись строк таблицы
+    println!("Расчет завершен. Начальный баланс: {:.2}, Конечный баланс: {:.2}",
+             best_result.initial_balance, balance);
+    println!("Всего ставок: {} (по алгоритму: {})", actual_total_bets, best_result.total_bets);
+    println!("Всего серий: {} (по алгоритму: {})", actual_total_series, best_result.total_series);
+    println!("Выигрышных серий: {} (по алгоритму: {})", actual_winning_series, best_result.winning_series);
+
     for row in rows {
         output.push_str(&format!(
-            "{:<5} {:<10.2} {:<10} {:<10} {:<15.2} {:<15.2} {:<10}\n",
-            row.index, row.number, row.stake, row.win, row.balance, row.max_balance, row.action
+            "{:<5} {:<10.2} {:<10} {:<10} {:<15.2} {:<15.2} {:<10} {:<10}\n",
+            row.index, row.number, row.stake, row.win, row.balance, row.max_balance, row.action, row.check_info
         ));
     }
 
@@ -280,7 +344,6 @@ pub fn save_detailed_calculation(
     output.push_str(&format!("Всего серий: {}\n", best_result.total_series));
     output.push_str(&format!("Выигрышных серий: {}\n", best_result.winning_series));
 
-    // Записываем весь буфер за один раз, что гораздо эффективнее множества записей
     file.write_all(output.as_bytes())?;
 
     let elapsed = start.elapsed();
