@@ -195,7 +195,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
     let cuda_available = check_cuda_availability();
     let combinations = generate_parameter_combinations(params);
     let total_combinations = combinations.len();
-    let progress_step = total_combinations / 20; // 5% шаг
+    let progress_step = std::cmp::max(1, total_combinations / 20); // 5% шаг, минимум 1
     let processed_cpu = Arc::new(AtomicUsize::new(0));
     let processed_gpu = Arc::new(AtomicUsize::new(0));
 
@@ -293,7 +293,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
     let mut combined_results = Vec::new();
     combined_results.extend(cpu_results.clone());
     combined_results.extend(gpu_results.clone());
-    combined_results.sort_by(|a, b| b.profit.partial_cmp(&a.profit).unwrap());
+    combined_results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
 
     let max_results: usize = params.max_results.parse().unwrap_or(10000);
     combined_results.truncate(max_results);
