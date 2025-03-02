@@ -293,18 +293,20 @@ pub fn strategy_triple_growth(
 pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec<OptimizationResult>, io::Error> {
     let cuda_available = check_cuda_availability();
 
-
+    // Создаем итератор вместо полного вектора комбинаций
     let param_iterator = ParameterCombinationIterator::new(params.clone());
     let total_combinations = param_iterator.estimate_total_count();
 
     println!("Оценка количества комбинаций: {}", total_combinations);
     println!("Начинаем оптимизацию с итеративной обработкой...");
 
+    // Проверяем способ поиска из settings.json
     let search_mode = match &params.search_mode {
         Some(mode) => mode.as_str(),
         None => "chunked",
     };
-    
+
+    // Получаем размер партии из конфигурации или используем значение по умолчанию
     let max_batch_size: usize = params.max_combination_batch
         .parse()
         .unwrap_or(1000000);
@@ -313,7 +315,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
     let processed_count = Arc::new(AtomicUsize::new(0));
 
     if search_mode == "full" && total_combinations < 100 {
-
+        // Для малого количества комбинаций можем использовать прямой подход
         let mut all_combinations = Vec::new();
         for combo in param_iterator {
             all_combinations.push(combo);
@@ -322,18 +324,31 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         let task_queue = Arc::new(ArrayQueue::new(all_combinations.len()));
         task_queue.push(all_combinations).unwrap();
 
-        let results = if cuda_available {
+        let gpu_results = if cuda_available {
             let (results, _) = process_gpu_combinations(
                 &task_queue, numbers, params, &processed_count, progress_step, total_combinations
-            );
+            )?;
             results
         } else {
             Vec::new()
         };
 
-        return results;
+        // Сортируем и возвращаем результаты
+        let mut results = gpu_results;
+        results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
+
+        let max_results: usize = params.max_results.parse()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
+                        format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
+
+        if results.len() > max_results {
+            results.truncate(max_results);
+        }
+
+        return Ok(results);
     }
 
+    // Создаем структуры для хранения лучших результатов
     use std::collections::BinaryHeap;
     use std::cmp::Reverse;
 
@@ -355,43 +370,55 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
     let max_results: usize = params.max_results.parse()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
                                     format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
-    let mut best_results = BinaryHeap::with_capacity(max_results);
 
-
+    // Обрабатываем батчами
     let mut current_batch = Vec::with_capacity(max_batch_size);
     let mut batch_counter = 0;
 
-
+    // Создаем очередь задач для CPU и GPU
     let shared_task_queue = Arc::new(ArrayQueue::new(100)); // Храним до 100 батчей в очереди
 
-
+    // Запускаем потоки для CPU и GPU обработки
     let task_queue_cpu = Arc::clone(&shared_task_queue);
     let numbers_for_cpu = numbers.clone();
     let params_for_cpu = params.clone();
     let processed_cpu_clone = Arc::clone(&processed_count);
+    let max_results_cpu = max_results;
 
-    let cpu_thread = std::thread::spawn(move || {
+    let cpu_thread = std::thread::spawn(move || -> Result<(Vec<HeapItem>, std::time::Duration), io::Error> {
         let cpu_start = Instant::now();
         let core_ids = core_affinity::get_core_ids()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Не удалось получить core_ids"))?;
-        let mut cpu_results = Vec::new();
+
+        // Используем BinaryHeap вместо Vec для хранения только лучших результатов
+        let mut cpu_best_results = BinaryHeap::with_capacity(max_results_cpu + 1);
 
         let p_core_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(P_THREADS)
             .start_handler(move |id| {
-                core_affinity::set_for_current(core_ids[id]);
+                core_affinity::set_for_current(core_ids[id % core_ids.len()]);
                 unsafe {
                     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
                 }
             })
             .build()
-            .unwrap();
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка создания пула потоков: {}", e)))?;
 
         while let Some(chunk) = task_queue_cpu.pop() {
             let chunk_results = p_core_pool.install(|| {
                 process_cpu_combinations(&chunk, &numbers_for_cpu, &params_for_cpu)
             });
-            cpu_results.extend(chunk_results);
+
+            // Добавляем результаты в heap и удаляем худшие, если превышен лимит
+            for result in chunk_results {
+                let item = HeapItem(Reverse(OrderedFloat(result.balance)), result);
+                cpu_best_results.push(item);
+
+                // Если в куче больше элементов, чем нужно, удаляем худший (с наименьшим balance)
+                if cpu_best_results.len() > max_results_cpu {
+                    cpu_best_results.pop();
+                }
+            }
 
             let current = processed_cpu_clone.fetch_add(chunk.len(), Ordering::SeqCst);
             if current / progress_step != (current + chunk.len()) / progress_step {
@@ -402,20 +429,22 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
             }
         }
 
-        (cpu_results, cpu_start.elapsed())
+        // Преобразуем BinaryHeap в вектор для возврата
+        let results_vec: Vec<HeapItem> = cpu_best_results.into_vec();
+        Ok((results_vec, cpu_start.elapsed()))
     });
 
-
+    // Обрабатываем комбинации из итератора
     for combination in param_iterator {
         current_batch.push(combination);
 
         if current_batch.len() >= max_batch_size {
-
+            // Сохраняем промежуточный результат
             save_intermediate_batch(&current_batch, batch_counter)?;
 
-
+            // Добавляем батч в очередь задач
             while shared_task_queue.push(current_batch.clone()).is_err() {
-
+                // Очередь полна, немного подождем
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
@@ -424,44 +453,64 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         }
     }
 
-
+    // Обрабатываем оставшиеся комбинации
     if !current_batch.is_empty() {
-
+        // Добавляем последний неполный батч в очередь
         while shared_task_queue.push(current_batch.clone()).is_err() {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         current_batch.clear();
     }
 
+    // Ожидаем завершения потоков
+    let (cpu_results_heap, cpu_time) = match cpu_thread.join() {
+        Ok(result) => result?,
+        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, format!("Ошибка в CPU потоке: {:?}", e))),
+    };
 
-    let (cpu_results, cpu_time) = cpu_thread.join().unwrap();
-
-
-    let gpu_results = if cuda_available {
-        process_gpu_combinations(
+    // Также обрабатываем данные на GPU, если доступен
+    let (gpu_results, gpu_time) = if cuda_available {
+        match process_gpu_combinations(
             &shared_task_queue,
             numbers,
             params,
             &processed_count,
             progress_step,
             total_combinations
-        )
+        ) {
+            Ok(result) => result,
+            Err(e) => return Err(e),
+        }
     } else {
         (Vec::new(), std::time::Duration::new(0, 0))
     };
 
-    let (gpu_results, gpu_time) = gpu_results;
+    // Объединяем результаты из CPU и GPU
+    let mut final_heap = BinaryHeap::with_capacity(max_results);
 
+    // Добавляем результаты из CPU heap
+    for item in cpu_results_heap {
+        final_heap.push(item);
+        if final_heap.len() > max_results {
+            final_heap.pop(); // Удаляем худший результат
+        }
+    }
 
-    let mut all_results = Vec::new();
-    all_results.extend(cpu_results);
-    all_results.extend(gpu_results);
+    // Конвертируем GPU результаты в HeapItem и добавляем их
+    for result in gpu_results {
+        let item = HeapItem(Reverse(OrderedFloat(result.balance)), result);
+        final_heap.push(item);
+        if final_heap.len() > max_results {
+            final_heap.pop();
+        }
+    }
+
+    // Извлекаем результаты из кучи и сортируем
+    let mut all_results: Vec<OptimizationResult> = final_heap.into_iter()
+        .map(|item| item.1)
+        .collect();
 
     all_results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
-
-    if all_results.len() > max_results {
-        all_results.truncate(max_results);
-    }
 
     println!("\nСтатистика выполнения:");
     println!("CPU время: {:?}", cpu_time);
