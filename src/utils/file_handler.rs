@@ -2,90 +2,47 @@ use crate::optimization::OptimizationResult;
 use ndarray::Array1;
 use std::fs::File;
 use std::io::Write;
-use std::io::{self, BufRead, BufReader};
-use std::time::Instant;
-use memmap2::MmapOptions;
+use std::io::{self, BufRead};
 
-const MAX_DETAILED_ROWS: usize = 500;
+const MAX_DETAILED_ROWS: usize = 2000;
+
+// Функция для округления до двух знаков после запятой (до сотых - центов)
+fn round_to_cents(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
 
 pub fn load_data_from_file(path: &str) -> io::Result<(Array1<f64>, Option<String>)> {
-    println!("Загрузка данных из файла: {}", path);
-    let start = Instant::now();
     let file = File::open(path)?;
-    let file_size = file.metadata()?.len();
+    let reader = io::BufReader::new(file);
     let mut numbers = Vec::new();
     let mut error_msg = None;
     let mut valid_numbers = 0;
     let mut invalid_lines = Vec::new();
 
-    if file_size > 50 * 1024 * 1024 {
-        println!("Используем memory mapping для большого файла: {} МБ", file_size / (1024 * 1024));
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        let first_value = line.split_whitespace().next().unwrap_or("");
 
-        let mmap = unsafe { MmapOptions::new().map(&file)? };
-        let mut current_line = Vec::new();
-        let mut line_number = 1;
-
-        for &byte in mmap.iter() {
-            if byte == b'\n' {
-                if let Ok(line) = String::from_utf8(current_line.clone()) {
-                    let first_value = line.split_whitespace().next().unwrap_or("");
-                    match first_value.parse::<f64>() {
-                        Ok(num) => {
-                            if num >= 0.0 {
-                                numbers.push(num);
-                                valid_numbers += 1;
-                            } else {
-                                invalid_lines.push(format!("Строка {}: отрицательное число", line_number));
-                            }
-                        }
-                        Err(_) => {
-                            if !line.trim().is_empty() {
-                                invalid_lines.push(format!("Строка {}: не удалось распознать число", line_number));
-                            }
-                        }
-                    }
+        match first_value.parse::<f64>() {
+            Ok(num) => {
+                if num >= 0.0 {
+                    numbers.push(num);
+                    valid_numbers += 1;
+                } else {
+                    invalid_lines.push(format!("Строка {}: отрицательное число", i + 1));
                 }
-                current_line.clear();
-                line_number += 1;
-            } else {
-                current_line.push(byte);
             }
-        }
-    } else {
-
-        let reader = BufReader::with_capacity(256 * 1024, file);
-
-        for (i, line) in reader.lines().enumerate() {
-            let line = line?;
-            let first_value = line.split_whitespace().next().unwrap_or("");
-
-            match first_value.parse::<f64>() {
-                Ok(num) => {
-                    if num >= 0.0 {
-                        numbers.push(num);
-                        valid_numbers += 1;
-                    } else {
-                        invalid_lines.push(format!("Строка {}: отрицательное число", i + 1));
-                    }
-                }
-                Err(_) => {
-                    if !first_value.is_empty() {
-                        invalid_lines.push(format!("Строка {}: не удалось распознать число", i + 1));
-                    }
-                }
+            Err(_) => {
+                invalid_lines.push(format!("Строка {}: не удалось распознать число", i + 1));
             }
         }
     }
 
     if !invalid_lines.is_empty() {
-        let total_errors = invalid_lines.len();
-
-        let errors_to_show = invalid_lines.iter().take(20).cloned().collect::<Vec<_>>();
         error_msg = Some(format!(
-            "Найдено {} ошибок при загрузке данных{}:\n{}",
-            total_errors,
-            if total_errors > 20 { format!(" (показаны первые 20 из {})", total_errors) } else { String::new() },
-            errors_to_show.join("\n")
+            "Найдено {} ошибок при загрузке данных:\n{}",
+            invalid_lines.len(),
+            invalid_lines.join("\n")
         ));
     }
 
@@ -93,10 +50,19 @@ pub fn load_data_from_file(path: &str) -> io::Result<(Array1<f64>, Option<String
         error_msg = Some("Файл не содержит валидных чисел".to_string());
     }
 
-    let elapsed = start.elapsed();
-    println!("Загружено {} чисел за {:?}", valid_numbers, elapsed);
-
     Ok((Array1::from(numbers), error_msg))
+}
+
+// Структура для хранения данных строки отчета
+struct RowData {
+    index: usize,
+    number: f64,
+    stake: String,
+    win: String,
+    balance: f64,
+    max_balance: f64,
+    action: String,
+    check_info: String,
 }
 
 pub fn save_detailed_calculation(
@@ -104,69 +70,67 @@ pub fn save_detailed_calculation(
     best_result: &OptimizationResult,
     filename: &str,
 ) -> io::Result<()> {
-    println!("Сохранение расчета для результата с балансом: {:.2}", best_result.balance);
-    let start = Instant::now();
     let mut file = File::create(filename)?;
     let mut row_count = 0;
     let mut actual_total_bets = 0;
     let mut actual_total_series = 0;
     let mut actual_winning_series = 0;
+    let mut rows = Vec::new();
 
-    let mut output = String::with_capacity(1024 * 1024);
-
-    const MAX_DETAILED_ROWS: usize = 5000;
-
-    output.push_str("=== Детальный расчет для лучшей стратегии ===\n\n");
-    output.push_str("Параметры стратегии:\n");
-    output.push_str(&format!("Базовая ставка: {:.2}\n", best_result.initial_stake));
-    output.push_str(&format!(
-        "Тип ставки: {}\n",
+    writeln!(file, "=== Детальный расчет для лучшей стратегии ===\n")?;
+    writeln!(file, "Параметры стратегии:")?;
+    writeln!(file, "Базовая ставка: {:.2}", best_result.initial_stake)?;
+    writeln!(
+        file,
+        "Тип ставки: {}",
         if best_result.bet_type == "fixed" {
             "Фиксированная"
         } else {
             "Процент от баланса"
         }
-    ));
-    output.push_str(&format!("Количество чисел для поиска: {}\n", best_result.num_low));
-    output.push_str(&format!("Порог поиска: {:.2}\n", best_result.search_threshold));
-    output.push_str(&format!("Порог ожидания: {:.2}\n", best_result.high_threshold));
-    output.push_str(&format!("Порог ставки: {:.2}\n", best_result.payout_threshold));
-    output.push_str(&format!("Множитель: {:.2}\n", best_result.multiplier));
-    output.push_str(&format!("Процент ставки: {:.2}%\n", best_result.stake_percent));
-    output.push_str(&format!("Количество попыток: {}\n\n", best_result.attempts));
+    )?;
+    writeln!(file, "Количество чисел для поиска: {}", best_result.num_low)?;
+    writeln!(file, "Порог поиска: {:.2}", best_result.search_threshold)?;
+    writeln!(file, "Порог ожидания: {:.2}", best_result.high_threshold)?;
+    writeln!(file, "Порог ставки: {:.2}", best_result.payout_threshold)?;
+    writeln!(file, "Множитель: {:.2}", best_result.multiplier)?;
+    writeln!(file, "Процент ставки: {:.2}%", best_result.stake_percent)?;
+    writeln!(file, "Количество попыток: {}\n", best_result.attempts)?;
 
-    output.push_str("Пошаговый расчет:\n\n");
-    output.push_str(&format!(
-        "{:<5} {:<10} {:<10} {:<10} {:<15} {:<15} {:<10} {:<10}\n",
-        "i", "Число", "Ставка", "Выигрыш", "Баланс", "Макс.баланс", "Действие", "Проверка"
-    ));
-    output.push_str(&format!("{}\n", "-".repeat(85)));
+    writeln!(file, "Пошаговый расчет:\n")?;
+    writeln!(
+        file,
+        "{:<5} {:<10} {:<10} {:<10} {:<15} {:<15} {:<12} {:<30}",
+        "i", "Число", "Ставка", "Выигрыш", "Баланс", "Макс.баланс", "Действие", "Доп.инфо"
+    )?;
+    writeln!(file, "{}", "-".repeat(110))?;
 
-    let mut balance = best_result.initial_balance;
+    let mut balance = round_to_cents(best_result.initial_balance);
     let mut max_balance = balance;
     let mut i = best_result.num_low;
-
-
-    let mut last_print_index = 0;
-
-    struct RowData {
-        index: usize,
-        number: f64,
-        stake: String,
-        win: String,
-        balance: f64,
-        max_balance: f64,
-        action: &'static str,
-        check_info: String,
-    }
-
-    let mut rows = Vec::with_capacity(MAX_DETAILED_ROWS);
+    let min_stake = if best_result.bet_type == "fixed" {
+        best_result.initial_stake
+    } else {
+        0.01 // Минимальная ставка для процентного типа
+    };
 
     while i < numbers.len() {
-        if i - last_print_index > 1000 {
-            println!("Прогресс: обработано {}/{} чисел, текущий баланс: {:.2}",
-                     i, numbers.len(), balance);
-            last_print_index = i;
+        // Показываем, что проверяем условия для начала цикла
+        if row_count < MAX_DETAILED_ROWS {
+            rows.push(RowData {
+                index: i,
+                number: numbers[i],
+                stake: "-".to_string(),
+                win: "-".to_string(),
+                balance,
+                max_balance,
+                action: "Проверка".to_string(),
+                check_info: format!(
+                    "Проверяем {} предыдущих чисел на <= {:.2}",
+                    best_result.num_low, best_result.search_threshold
+                ),
+            });
+            row_count += 1;
         }
 
         let mut sequence_valid = true;
@@ -174,6 +138,28 @@ pub fn save_detailed_calculation(
         for j in 0..best_result.num_low {
             if i <= j || numbers[i - j - 1] > best_result.search_threshold {
                 sequence_valid = false;
+
+                // Показываем, почему условие не выполнено
+                if row_count < MAX_DETAILED_ROWS {
+                    rows.push(RowData {
+                        index: i,
+                        number: numbers[i],
+                        stake: "-".to_string(),
+                        win: "-".to_string(),
+                        balance,
+                        max_balance,
+                        action: "НЕУДАЧА".to_string(),
+                        check_info: if i <= j {
+                            "Недостаточно предыдущих чисел".to_string()
+                        } else {
+                            format!(
+                                "Число {} > порога {:.2}",
+                                numbers[i - j - 1], best_result.search_threshold
+                            )
+                        },
+                    });
+                    row_count += 1;
+                }
                 break;
             }
         }
@@ -181,20 +167,21 @@ pub fn save_detailed_calculation(
         if sequence_valid {
             if row_count < MAX_DETAILED_ROWS {
                 rows.push(RowData {
-                    index: i - 1,
-                    number: numbers[i - 1],
+                    index: i,
+                    number: numbers[i],
                     stake: "-".to_string(),
                     win: "-".to_string(),
                     balance,
                     max_balance,
-                    action: "Поиск",
-                    check_info: format!("Найдено {} чисел ≤ {:.2}", best_result.num_low, best_result.search_threshold),
+                    action: "Поиск".to_string(),
+                    check_info: format!(
+                        "УСПЕШНО: найдено {} чисел <= {:.2}",
+                        best_result.num_low, best_result.search_threshold
+                    ),
                 });
                 row_count += 1;
-            } else if row_count == MAX_DETAILED_ROWS {
-                output.push_str("\n... и еще строки ...\n\n");
-                row_count += 1;
             }
+
             let mut search_i = i;
             while search_i < numbers.len() && numbers[search_i] < best_result.high_threshold {
                 if row_count < MAX_DETAILED_ROWS {
@@ -205,138 +192,264 @@ pub fn save_detailed_calculation(
                         win: "-".to_string(),
                         balance,
                         max_balance,
-                        action: "Ожидание",
-                        check_info: String::new(),
+                        action: "Ожидание".to_string(),
+                        check_info: format!("Ждем число >= {:.2}", best_result.high_threshold),
                     });
-                    row_count += 1;
-                } else if row_count == MAX_DETAILED_ROWS {
-                    output.push_str("\n... и еще строки ...\n\n");
                     row_count += 1;
                 }
                 search_i += 1;
             }
 
             if search_i < numbers.len() && numbers[search_i] >= best_result.high_threshold {
+                // Нашли подходящее высокое число - потенциально можем делать ставку
+                if row_count < MAX_DETAILED_ROWS {
+                    rows.push(RowData {
+                        index: search_i,
+                        number: numbers[search_i],
+                        stake: "-".to_string(),
+                        win: "-".to_string(),
+                        balance,
+                        max_balance,
+                        action: "СИГНАЛ".to_string(),
+                        check_info: format!(
+                            "Найдено число {:.2} >= порога {:.2}",
+                            numbers[search_i], best_result.high_threshold
+                        ),
+                    });
+                    row_count += 1;
+                }
+
+                // Объявляем current_i здесь, чтобы она была видна во всем блоке
+                let mut current_i = search_i;
                 actual_total_series += 1;
 
-                let mut current_stake = if best_result.bet_type == "fixed" {
-                    best_result.initial_stake
+                // Каждую новую серию начинаем с заново рассчитанной начальной ставки
+                let initial_stake = if best_result.bet_type == "fixed" {
+                    round_to_cents(best_result.initial_stake)
                 } else {
-                    balance * (best_result.stake_percent / 100.0)
+                    round_to_cents(balance * (best_result.stake_percent / 100.0))
                 };
 
-                let min_stake = if best_result.bet_type == "fixed" {
-                    best_result.initial_stake
-                } else {
-                    balance * (best_result.stake_percent / 100.0)
-                };
-
-                let can_continue = if best_result.bet_type == "fixed" {
-                    balance >= min_stake
-                } else {
-                    balance > 0.0
-                };
-
-                if !can_continue {
+                // Проверяем, хватит ли на первую ставку
+                if initial_stake > balance {
                     if row_count < MAX_DETAILED_ROWS {
                         rows.push(RowData {
                             index: search_i,
                             number: numbers[search_i],
-                            stake: "-".to_string(),
+                            stake: format!("{:.2}", initial_stake),
                             win: "-".to_string(),
                             balance,
                             max_balance,
-                            action: "Недостаточно средств",
-                            check_info: format!("Требуется: {:.2}", min_stake),
+                            action: "СТОП".to_string(),
+                            check_info: format!(
+                                "Недостаточно средств для начальной ставки: требуется {:.2}, доступно {:.2}",
+                                initial_stake, balance
+                            ),
                         });
                         row_count += 1;
                     }
-                    i = search_i + 1;
-                    continue;
-                }
+                } else {
+                    // Проверяем серию ставок
+                    // В блоке else после проверки initial_stake > balance:
+                    let mut can_make_all_bets = true;
+                    let mut temp_balance = balance;
+                    let mut temp_stake = initial_stake;
+                    let mut failing_attempt = 1; // Сбросим номер попытки
 
-                for attempt in 0..=best_result.attempts-1 {
-                    if current_stake > balance || search_i + attempt + 1 >= numbers.len() {
-                        break;
+                    // Проверка возможности сделать все ставки в серии
+                    for attempt in 1..=best_result.attempts {
+                        if temp_stake > temp_balance {
+                            can_make_all_bets = false;
+                            failing_attempt = attempt;
+                            break;
+                        }
+                        temp_balance -= temp_stake;
+                        temp_stake = round_to_cents(temp_stake * best_result.multiplier);
                     }
 
-                    balance -= current_stake;
-                    actual_total_bets += 1;
 
-                    if numbers[search_i + attempt + 1] >= best_result.payout_threshold {
-                        let win = current_stake * best_result.payout_threshold;
-                        balance += win;
-                        max_balance = max_balance.max(balance);
-                        actual_winning_series += 1;
-
-
-
-                        if row_count < MAX_DETAILED_ROWS {
-                            rows.push(RowData {
-                                index: search_i + attempt + 1,
-                                number: numbers[search_i + attempt + 1],
-                                stake: format!("{:.2}", current_stake),
-                                win: format!("{:.2}", win),
-                                balance,
-                                max_balance,
-                                action: "Выигрыш",
-                                check_info: format!("Коэф: {:.2}", numbers[search_i + attempt + 1]),
-                            });
-                            row_count += 1;
-                        } else if row_count == MAX_DETAILED_ROWS {
-                            output.push_str("\n... и еще строки ...\n\n");
-                            row_count += 1;
+                    if !can_make_all_bets {
+                        // Вычисляем, какая конкретно ставка не проходит
+                        let mut display_stake = initial_stake;
+                        for _ in 1..failing_attempt {
+                            display_stake = round_to_cents(display_stake * best_result.multiplier);
                         }
-                        break;
-                    } else {
+
                         if row_count < MAX_DETAILED_ROWS {
                             rows.push(RowData {
-                                index: search_i + attempt + 1,
-                                number: numbers[search_i + attempt + 1],
-                                stake: format!("{:.2}", current_stake),
+                                index: search_i,
+                                number: numbers[search_i],
+                                stake: format!("{:.2}", display_stake),
                                 win: "-".to_string(),
                                 balance,
                                 max_balance,
-                                action: "Проигрыш",
-                                check_info: format!("Коэф: {:.2}", numbers[search_i + attempt + 1]),
+                                action: "СТОП".to_string(),
+                                check_info: format!(
+                                    "Недостаточно средств для ставки №{}: требуется {:.2}, доступно {:.2}",
+                                    failing_attempt, display_stake, balance
+                                ),
                             });
                             row_count += 1;
-                        } else if row_count == MAX_DETAILED_ROWS {
-                            output.push_str("\n... и еще строки ...\n\n");
-                            row_count += 1;
                         }
-                        current_stake *= best_result.multiplier;
+                    } else {
+                        // Можем делать все ставки в серии
+                        let mut current_stake = initial_stake;
+
+                        for attempt in 0..best_result.attempts {
+                            if current_i >= numbers.len() - 1 {
+                                if row_count < MAX_DETAILED_ROWS {
+                                    rows.push(RowData {
+                                        index: current_i,
+                                        number: if current_i < numbers.len() { numbers[current_i] } else { 0.0 },
+                                        stake: "-".to_string(),
+                                        win: "-".to_string(),
+                                        balance,
+                                        max_balance,
+                                        action: "ОСТАНОВКА".to_string(),
+                                        check_info: "Достигнут конец данных".to_string(),
+                                    });
+                                    row_count += 1;
+                                }
+                                break;
+                            }
+
+                            actual_total_bets += 1;
+                            current_i += 1;
+
+                            // Обновляем баланс, вычитая текущую ставку
+                            let new_balance = round_to_cents(balance - current_stake);
+
+                            if numbers[current_i] >= best_result.payout_threshold {
+                                // Расчет выигрыша на основе порога ставки
+                                let win = round_to_cents(current_stake * best_result.payout_threshold);
+                                // Обновляем баланс, добавляя выигрыш
+                                let updated_balance = round_to_cents(new_balance + win);
+                                max_balance = max_balance.max(updated_balance);
+                                actual_winning_series += 1;
+
+                                if row_count < MAX_DETAILED_ROWS {
+                                    rows.push(RowData {
+                                        index: current_i,
+                                        number: numbers[current_i],
+                                        stake: format!("{:.2}", current_stake),
+                                        win: format!("{:.2}", win),
+                                        balance: updated_balance, // Отображаем баланс уже с выигрышем
+                                        max_balance,
+                                        action: "Выигрыш".to_string(),
+                                        check_info: format!("Коэф: {:.2} >= порога {:.2}",
+                                                          numbers[current_i], best_result                                                          .payout_threshold),
+                                    });
+                                    row_count += 1;
+                                }
+
+                                balance = updated_balance; // Обновляем реальный баланс
+                                break;
+                            } else {
+                                if row_count < MAX_DETAILED_ROWS {
+                                    rows.push(RowData {
+                                        index: current_i,
+                                        number: numbers[current_i],
+                                        stake: format!("{:.2}", current_stake),
+                                        win: "-".to_string(),
+                                        balance: new_balance, // Отображаем баланс
+                                        max_balance,
+                                        action: "Проигрыш".to_string(),
+                                        check_info: format!("Коэф: {:.2} < порога {:.2}",
+                                                          numbers[current_i], best_result.payout_threshold),
+                                    });
+                                    row_count += 1;
+                                }
+
+                                balance = new_balance; // Обновляем реальный баланс
+                                // Увеличиваем ставку для следующей попытки
+                                current_stake = round_to_cents(current_stake * best_result.multiplier);
+                            }
+                        }
                     }
                 }
-                i = search_i + best_result.attempts + 1;
+
+                i = current_i + 1;
                 continue;
             }
         }
         i += 1;
     }
 
+    // Отсортируем строки по индексу для хронологического порядка
+    rows.sort_by_key(|row| row.index);
 
-
+    // Запишем все строки в файл
     for row in rows {
-        output.push_str(&format!(
-            "{:<5} {:<10.2} {:<10} {:<10} {:<15.2} {:<15.2} {:<10} {:<10}\n",
-            row.index, row.number, row.stake, row.win, row.balance, row.max_balance, row.action, row.check_info
-        ));
+        writeln!(
+            file,
+            "{:<5} {:<10.2} {:<10} {:<10} {:<15.2} {:<15.2} {:<12} {:<}",
+            row.index,
+            row.number,
+            row.stake,
+            row.win,
+            row.balance,
+            row.max_balance,
+            row.action,
+            row.check_info
+        )?;
     }
 
-    output.push_str("\nИтоговые результаты:\n");
-    output.push_str(&format!("Начальный баланс: {:.2}\n", best_result.initial_balance));
-    output.push_str(&format!("Конечный баланс: {:.2}\n", best_result.balance));
-    output.push_str(&format!("Максимальный баланс: {:.2}\n", best_result.max_balance));
-    output.push_str(&format!("Общая прибыль: {:.2}\n", best_result.profit));
-    output.push_str(&format!("Всего ставок: {}\n", best_result.total_bets));
-    output.push_str(&format!("Всего серий: {}\n", best_result.total_series));
-    output.push_str(&format!("Выигрышных серий: {}\n", best_result.winning_series));
+    // Запишем итоговые результаты
+    writeln!(file, "\nИтоговые результаты:")?;
+    writeln!(file, "Начальный баланс: {:.2}", best_result.initial_balance)?;
+    writeln!(file, "Конечный баланс: {:.2}", balance)?;
+    writeln!(file, "Максимальный баланс: {:.2}", max_balance)?;
+    writeln!(file, "Общая прибыль: {:.2}", round_to_cents(balance - best_result.initial_balance))?;
+    writeln!(file, "Всего ставок: {}", actual_total_bets)?;
+    writeln!(file, "Всего серий: {}", actual_total_series)?;
+    writeln!(file, "Выигрышных серий: {}", actual_winning_series)?;
+    writeln!(
+        file,
+        "Процент выигрышных серий: {:.2}%",
+        if actual_total_series > 0 {
+            (actual_winning_series as f64 / actual_total_series as f64) * 100.0
+        } else {
+            0.0
+        }
+    )?;
 
-    file.write_all(output.as_bytes())?;
-
-    let elapsed = start.elapsed();
-    println!("Расчет сохранен в файл за {:?}", elapsed);
+    // Сравнение с результатами оптимизации
+    writeln!(file, "\nСравнение с результатами оптимизации:")?;
+    writeln!(
+        file,
+        "Баланс: оптимизация={:.2}, расчет={:.2}, разница={:.2}",
+        best_result.balance,
+        balance,
+        round_to_cents(balance - best_result.balance)
+    )?;
+    writeln!(
+        file,
+        "Макс. баланс: оптимизация={:.2}, расчет={:.2}, разница={:.2}",
+        best_result.max_balance,
+        max_balance,
+        round_to_cents(max_balance - best_result.max_balance)
+    )?;
+    writeln!(
+        file,
+        "Всего ставок: оптимизация={}, расчет={}, разница={}",
+        best_result.total_bets,
+        actual_total_bets,
+        actual_total_bets as i64 - best_result.total_bets as i64
+    )?;
+    writeln!(
+        file,
+        "Всего серий: оптимизация={}, расчет={}, разница={}",
+        best_result.total_series,
+        actual_total_series,
+        actual_total_series as i64 - best_result.total_series as i64
+    )?;
+    writeln!(
+        file,
+        "Выигрышных серий: оптимизация={}, расчет={}, разница={}",
+        best_result.winning_series,
+        actual_winning_series,
+        actual_winning_series as i64 - best_result.winning_series as i64
+    )?;
 
     Ok(())
 }

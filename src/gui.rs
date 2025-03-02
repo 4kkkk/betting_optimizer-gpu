@@ -217,7 +217,7 @@ impl OptimizationApp {
 
     fn display_status(&self, ui: &mut egui::Ui) {
         fn format_number(num: f64) -> String {
-            if num < 10000.0 {
+            if num < 100000.0 {
                 format!("{:.2}", num)
             } else {
                 let exp = num.abs().log10().floor();

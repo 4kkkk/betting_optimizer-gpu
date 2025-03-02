@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
 
-const P_THREADS: usize = 16;
+const P_THREADS: usize = 20;
 
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
@@ -40,6 +40,10 @@ struct ParameterCombination {
     stake_percent: f64,
     attempts: usize,
 }
+fn round_to_cents(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 
 fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination> {
     let size_estimate = (params.max_num_low - params.min_num_low + 1)
@@ -51,7 +55,7 @@ fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination>
 
     let mut combinations = Vec::with_capacity(size_estimate);
 
-    // Используем ..= для включения верхней границы
+
     for num_low in params.min_num_low..=params.max_num_low {
         let mut search_threshold = params.min_search_threshold;
         while search_threshold <= params.max_search_threshold {
@@ -111,7 +115,7 @@ pub fn strategy_triple_growth(
     stake_percent: f64,
     attempts: u32,
 ) -> (f64, f64, u32, u32, u32, u32) {
-    let mut balance = initial_balance;
+    let mut balance = round_to_cents(initial_balance);
     let mut max_balance = initial_balance;
     let mut total_series = 0u32;
     let mut winning_series = 0u32;
@@ -141,9 +145,9 @@ pub fn strategy_triple_growth(
                 let mut current_i = search_i;
 
                 let initial_bet = if bet_type == 0 {
-                    stake
+                    round_to_cents(stake)
                 } else {
-                    balance * (stake_percent / 100.0)
+                    round_to_cents(balance * (stake_percent / 100.0))
                 };
 
                 let mut current_stake = initial_bet;
@@ -157,17 +161,18 @@ pub fn strategy_triple_growth(
 
                     current_i += 1;
                     total_bets += 1;
-                    balance -= current_stake;
+                    balance = round_to_cents(balance - current_stake);
 
                     if numbers[current_i] >= payout_threshold {
-                        balance += current_stake * payout_threshold;
+                        let win = round_to_cents(current_stake * payout_threshold);
+                        balance = round_to_cents(balance + win);
                         winning_series += 1;
                         consecutive_losses = 0;
-                        max_balance = max_balance.max(balance);
+                        max_balance = round_to_cents(max_balance.max(balance));
                         break;
                     } else {
                         consecutive_losses += 1;
-                        current_stake *= multiplier;
+                        current_stake = round_to_cents(current_stake * multiplier);
                         betting_attempts += 1;
                     }
                 }
@@ -183,8 +188,8 @@ pub fn strategy_triple_growth(
     }
 
     (
-        balance,
-        max_balance,
+        round_to_cents(balance),
+        round_to_cents(max_balance),
         total_bets,
         total_series,
         winning_series,
@@ -233,7 +238,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
     println!("Всего комбинаций для обработки: {}", total_combinations);
     println!("Начинаем оптимизацию...");
 
-    for chunk in combinations.chunks(1000) {
+    for chunk in combinations.chunks(4000) {
         shared_task_queue.push(chunk.to_vec()).unwrap();
     }
 
@@ -394,7 +399,7 @@ fn process_gpu_combinations(
                     total_series: 0,
                     winning_series: 0,
                     profit: 0.0,
-                    initial_balance: params.initial_balance,
+                    initial_balance: round_to_cents(params.initial_balance),
                 };
                 batch.len()
             ];
@@ -410,7 +415,7 @@ fn process_gpu_combinations(
                 numbers_slice.len() as i32,
                 batch.len() as i32,
                 bet_type,
-                params.stake
+                round_to_cents(params.stake)
             ))
                 .unwrap();
 
@@ -440,7 +445,7 @@ fn process_gpu_combinations(
                             profit: gpu_result.profit,
                             initial_balance: gpu_result.initial_balance,
                             bet_type: params.bet_type.clone(),
-                            initial_stake: params.stake,
+                            initial_stake: round_to_cents(params.stake),
                         })
                     } else {
                         None
@@ -467,28 +472,28 @@ fn process_combination(
     params: &Params,
 ) -> Option<OptimizationResult> {
     let stake_value = if params.bet_type == "fixed" {
-        params.stake
+        round_to_cents(params.stake)
     } else {
         0.0
     };
 
     // Проверка возможности выполнить максимальное количество ставок
     let initial_bet = if params.bet_type == "fixed" {
-        params.stake
+        round_to_cents(params.stake)
     } else {
-        params.initial_balance * (combo.stake_percent / 100.0)
+        round_to_cents(params.initial_balance * (combo.stake_percent / 100.0))
     };
 
     // Симуляция последовательности ставок для проверки достаточности баланса
-    let mut test_balance = params.initial_balance;
+    let mut test_balance = round_to_cents(params.initial_balance);
     let mut test_stake = initial_bet;
     for _ in 0..combo.attempts {
         if test_stake > test_balance {
             // Если для следующей ставки недостаточно средств, отбраковываем эту комбинацию
             return None;
         }
-        test_balance -= test_stake;
-        test_stake *= combo.multiplier;
+        test_balance = round_to_cents(test_balance - test_stake);
+        test_stake = round_to_cents(test_stake * combo.multiplier);
     }
 
     // Если проверка прошла, продолжаем с основным расчетом
@@ -497,7 +502,7 @@ fn process_combination(
             numbers,
             stake_value,
             combo.multiplier,
-            params.initial_balance,
+            round_to_cents(params.initial_balance),
             combo.search_threshold,
             combo.high_threshold,
             combo.payout_threshold,
@@ -507,7 +512,7 @@ fn process_combination(
             combo.attempts as u32,
         );
 
-    if total_series > 0 && balance > params.initial_balance {
+    if total_series > 0 && balance > round_to_cents(params.initial_balance) {
         Some(OptimizationResult {
             num_low: combo.num_low,
             search_threshold: combo.search_threshold,
@@ -521,10 +526,10 @@ fn process_combination(
             total_bets,
             total_series,
             winning_series,
-            profit: balance - params.initial_balance,
-            initial_balance: params.initial_balance,
+            profit: round_to_cents(balance - round_to_cents(params.initial_balance)),  // Округляем прибыль
+            initial_balance: round_to_cents(params.initial_balance),  // Округляем начальный баланс
             bet_type: params.bet_type.clone(),
-            initial_stake: params.stake,
+            initial_stake: round_to_cents(params.stake),  // Округляем начальную ставку
         })
     } else {
         None

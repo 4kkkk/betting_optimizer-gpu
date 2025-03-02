@@ -2,6 +2,14 @@
 #include <math.h>
 
 #define SM_TARGET 86
+#define THREADS_PER_BLOCK 256
+#define MAX_SHARED_MEM_PER_BLOCK 49152
+#define WARP_SIZE 32
+
+// Функция для округления до двух знаков после запятой (до сотых - центов)
+__device__ double round_to_cents(double value) {
+    return round(value * 100.0) / 100.0;
+}
 
 struct GpuOptimizationResult {
     double balance;
@@ -34,7 +42,8 @@ extern "C" __global__ void optimize_kernel(
     const double stake_param = params[param_offset + 5];
     const int attempts = __double2int_rd(params[param_offset + 6]);
 
-    double balance = results[idx].initial_balance;
+    // Округляем начальный баланс
+    double balance = round_to_cents(results[idx].initial_balance);
     double max_balance = balance;
     int total_bets = 0;
     int total_series = 0;
@@ -61,24 +70,36 @@ extern "C" __global__ void optimize_kernel(
             if (search_i < numbers_len && numbers[search_i] >= high_threshold) {
                 total_series++;
 
+                // Проверка достаточности баланса для всей серии ставок до начала
                 double test_balance = balance;
-                double test_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
+                // Округляем начальную ставку
+                double test_stake = bet_type == 0 ?
+                    round_to_cents(base_stake) :
+                    round_to_cents(balance * (stake_param / 100.0));
+
                 for (int test_attempt = 0; test_attempt < attempts; test_attempt++) {
                     if (test_stake > test_balance) {
                         insufficient_balance_flag = true;
-                        break;
+                        break; // Выход из цикла проверки
                     }
-                    test_balance -= test_stake;
-                    test_stake *= multiplier;
+                    // Округляем вычитание ставки из тестового баланса
+                    test_balance = round_to_cents(test_balance - test_stake);
+                    // Округляем увеличение ставки
+                    test_stake = round_to_cents(test_stake * multiplier);
                 }
 
                 if (insufficient_balance_flag) {
-                    break;
+                    break; // Выход из основного цикла сразу
                 }
 
                 int betting_attempts = 0;
-                double current_stake = bet_type == 0 ? base_stake : balance * (stake_param / 100.0);
+                // Округляем начальную ставку
+                double current_stake = bet_type == 0 ?
+                    round_to_cents(base_stake) :
+                    round_to_cents(balance * (stake_param / 100.0));
+
                 int current_i = search_i;
+
                 while (betting_attempts <= attempts - 1 && current_i < numbers_len - 1) {
                     if (current_stake > balance) {
                         break;
@@ -86,17 +107,22 @@ extern "C" __global__ void optimize_kernel(
 
                     current_i++;
                     total_bets++;
-                    balance -= current_stake;
+                    // Округляем вычитание ставки из баланса
+                    balance = round_to_cents(balance - current_stake);
 
                     if (numbers[current_i] >= payout_threshold) {
-                        balance += current_stake * payout_threshold;
+                        // Округляем выигрыш
+                        double win = round_to_cents(current_stake * payout_threshold);
+                        // Округляем прибавление выигрыша к балансу
+                        balance = round_to_cents(balance + win);
                         winning_series++;
                         consecutive_losses = 0;
                         max_balance = fmax(balance, max_balance);
                         break;
                     } else {
                         consecutive_losses++;
-                        current_stake *= multiplier;
+                        // Округляем увеличение ставки
+                        current_stake = round_to_cents(current_stake * multiplier);
                         betting_attempts++;
                     }
                 }
@@ -114,10 +140,13 @@ extern "C" __global__ void optimize_kernel(
     if (insufficient_balance_flag) {
         results[idx].profit = -1.0;
     } else {
-        results[idx].balance = balance;
-        results[idx].max_balance = max_balance;
+        // Округляем все финальные результаты
+        results[idx].balance = round_to_cents(balance);
+        results[idx].max_balance = round_to_cents(max_balance);
         results[idx].total_bets = total_bets;
         results[idx].total_series = total_series;
         results[idx].winning_series = winning_series;
-        results[idx].profit = balance - results[idx].initial_balance;
-    }}
+        // Округляем прибыль
+        results[idx].profit = round_to_cents(balance - results[idx].initial_balance);
+    }
+}
