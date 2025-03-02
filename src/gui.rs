@@ -184,7 +184,6 @@ impl OptimizationApp {
                 min_payout_threshold: self.settings.min_payout_threshold.parse().unwrap_or(2.5),
                 max_payout_threshold: self.settings.max_payout_threshold.parse().unwrap_or(3.0),
                 bet_type: self.settings.bet_type.clone(),
-
                 min_stake_percent: self.settings.min_stake_percent.parse().unwrap_or(1.0),
                 max_stake_percent: self.settings.max_stake_percent.parse().unwrap_or(1.0),
                 min_high_threshold: self.settings.min_high_threshold.parse().unwrap_or(2.0),
@@ -194,20 +193,31 @@ impl OptimizationApp {
                 min_attempts_count: self.settings.min_attempts_count.parse().unwrap_or(4),
                 max_attempts_count: self.settings.max_attempts_count.parse().unwrap_or(4),
                 numbers,
-
                 max_results: self.settings.max_results.clone(),
+                max_combination_batch: "1000000".to_string(), // Значение по умолчанию
+                search_mode: "chunked".to_string(),           // Значение по умолчанию
             };
 
-            self.results = optimize_parameters(&params.numbers, &params);
 
-            if let Err(e) = self.save_results() {
-                self.status = format!("Ошибка сохранения результатов: {}", e);
-            } else {
-                self.status = format!(
-                    "Оптимизация завершена! Найдено {} прибыльных комбинаций. Результаты сохранены.",
-                    self.results.len()
-                );
+            match optimize_parameters(&params.numbers, &params) {
+                Ok(results) => {
+                    self.results = results;
+
+                    if let Err(e) = self.save_results() {
+                        self.status = format!("Ошибка сохранения результатов: {}", e);
+                    } else {
+                        self.status = format!(
+                            "Оптимизация завершена! Найдено {} прибыльных комбинаций. Результаты сохранены.",
+                            self.results.len()
+                        );
+                    }
+                },
+                Err(e) => {
+                    self.status = format!("Ошибка оптимизации: {}", e);
+                    self.is_running = false;
+                }
             }
+
         } else {
             self.status = "Ошибка загрузки данных".to_string();
         }

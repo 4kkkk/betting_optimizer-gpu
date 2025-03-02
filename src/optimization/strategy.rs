@@ -9,14 +9,24 @@ use rustacuda::memory::DeviceBuffer;
 use rustacuda::prelude::*;
 use rustacuda_derive::DeviceCopy;
 use std::ffi::CString;
+use std::io;
+use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use std::fs::{File, create_dir_all};
+use std::path::Path;
+use eframe::emath::OrderedFloat;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
+use serde::{Serialize, Deserialize};
 
-const P_THREADS: usize = 23;
+
+
+
+
+const P_THREADS: usize = 20;
 
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
@@ -30,7 +40,154 @@ struct GpuOptimizationResult {
     initial_balance: f64,
 }
 
-#[derive(Clone, Debug)]
+struct ParameterCombinationIterator {
+    params: Params,
+    indices: [usize; 7], // Индексы для [num_low, search_threshold, high_threshold, payout_threshold, multiplier, stake_percent, attempts]
+    current_values: [f64; 7], // Текущие значения параметров
+    finished: bool,
+    max_indices: [usize; 7], // Максимальные индексы для каждого параметра
+    stake_percent_values: Vec<f64>, // Кэшируем значения stake_percent
+}
+
+impl ParameterCombinationIterator {
+    fn new(params: Params) -> Self {
+
+        let max_num_low = params.max_num_low - params.min_num_low;
+        let max_search = ((params.max_search_threshold - params.min_search_threshold) / 0.1) as usize;
+        let max_high = ((params.max_high_threshold - params.min_high_threshold) / 0.1) as usize;
+        let max_payout = ((params.max_payout_threshold - params.min_payout_threshold) / 0.1) as usize;
+        let max_multi = ((params.max_multiplier - params.min_multiplier) / 0.1) as usize;
+        let max_attempts = params.max_attempts_count - params.min_attempts_count;
+
+        let mut stake_percents = Vec::new();
+        if params.bet_type == "fixed" {
+            stake_percents.push(params.min_stake_percent);
+        } else {
+            let mut current = params.min_stake_percent;
+            while current <= params.max_stake_percent {
+                stake_percents.push(current);
+                current += 0.1;
+            }
+        }
+        let max_stake = stake_percents.len() - 1;
+
+        let current_values = [
+            params.min_num_low as f64,
+            params.min_search_threshold,
+            params.min_high_threshold,
+            params.min_payout_threshold,
+            params.min_multiplier,
+            stake_percents[0],
+            params.min_attempts_count as f64,
+        ];
+
+        ParameterCombinationIterator {
+            params,
+            indices: [0, 0, 0, 0, 0, 0, 0],
+            current_values,
+            finished: false,
+            max_indices: [max_num_low, max_search, max_high, max_payout, max_multi, max_stake, max_attempts],
+            stake_percent_values: stake_percents,
+        }
+    }
+
+    fn estimate_total_count(&self) -> usize {
+
+        let mut total = 1;
+        for i in 0..7 {
+            total *= self.max_indices[i] + 1;
+        }
+        total
+    }
+
+    fn create_combination(&self) -> ParameterCombination {
+        ParameterCombination {
+            num_low: self.current_values[0] as usize,
+            search_threshold: self.current_values[1],
+            high_threshold: self.current_values[2],
+            payout_threshold: self.current_values[3],
+            multiplier: self.current_values[4],
+            stake_percent: self.current_values[5],
+            attempts: self.current_values[6] as usize,
+        }
+    }
+}
+
+impl Iterator for ParameterCombinationIterator {
+    type Item = ParameterCombination;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let combination = self.create_combination();
+
+        let mut i = 6; // Начинаем с последнего индекса
+        loop {
+            if i == 5 { // Особая обработка для stake_percent
+                if self.indices[i] < self.max_indices[i] {
+                    self.indices[i] += 1;
+                    self.current_values[i] = self.stake_percent_values[self.indices[i]];
+                    break;
+                } else {
+                    self.indices[i] = 0;
+                    self.current_values[i] = self.stake_percent_values[0];
+                    i -= 1;
+                }
+            } else if i == 0 { // num_low
+                if self.indices[i] < self.max_indices[i] {
+                    self.indices[i] += 1;
+                    self.current_values[i] = (self.params.min_num_low + self.indices[i]) as f64;
+                    break;
+                } else {
+
+                    self.finished = true;
+                    return Some(combination);
+                }
+            } else if i == 6 { // attempts
+                if self.indices[i] < self.max_indices[i] {
+                    self.indices[i] += 1;
+                    self.current_values[i] = (self.params.min_attempts_count + self.indices[i]) as f64;
+                    break;
+                } else {
+                    self.indices[i] = 0;
+                    self.current_values[i] = self.params.min_attempts_count as f64;
+                    i -= 1;
+                }
+            } else { // Остальные параметры с шагом 0.1
+                if self.indices[i] < self.max_indices[i] {
+                    self.indices[i] += 1;
+                    match i {
+                        1 => self.current_values[i] = self.params.min_search_threshold + (self.indices[i] as f64 * 0.1),
+                        2 => self.current_values[i] = self.params.min_high_threshold + (self.indices[i] as f64 * 0.1),
+                        3 => self.current_values[i] = self.params.min_payout_threshold + (self.indices[i] as f64 * 0.1),
+                        4 => self.current_values[i] = self.params.min_multiplier + (self.indices[i] as f64 * 0.1),
+                        _ => unreachable!(),
+                    }
+                    break;
+                } else {
+                    self.indices[i] = 0;
+                    match i {
+                        1 => self.current_values[i] = self.params.min_search_threshold,
+                        2 => self.current_values[i] = self.params.min_high_threshold,
+                        3 => self.current_values[i] = self.params.min_payout_threshold,
+                        4 => self.current_values[i] = self.params.min_multiplier,
+                        _ => unreachable!(),
+                    }
+                    i -= 1;
+                }
+            }
+        }
+
+        Some(combination)
+    }
+}
+
+
+
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ParameterCombination {
     num_low: usize,
     search_threshold: f64,
@@ -42,64 +199,6 @@ struct ParameterCombination {
 }
 fn round_to_cents(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
-}
-
-
-fn generate_parameter_combinations(params: &Params) -> Vec<ParameterCombination> {
-    let size_estimate = (params.max_num_low - params.min_num_low + 1)
-        * ((params.max_search_threshold - params.min_search_threshold) / 0.1 + 1.0) as usize
-        * ((params.max_high_threshold - params.min_high_threshold) / 0.1 + 1.0) as usize
-        * ((params.max_payout_threshold - params.min_payout_threshold) / 0.1 + 1.0) as usize
-        * ((params.max_multiplier - params.min_multiplier) / 0.1 + 1.0) as usize
-        * (params.max_attempts_count - params.min_attempts_count + 1);
-
-    let mut combinations = Vec::with_capacity(size_estimate);
-
-
-    for num_low in params.min_num_low..=params.max_num_low {
-        let mut search_threshold = params.min_search_threshold;
-        while search_threshold <= params.max_search_threshold {
-            let mut high_threshold = params.min_high_threshold;
-            while high_threshold <= params.max_high_threshold {
-                let mut payout_threshold = params.min_payout_threshold;
-                while payout_threshold <= params.max_payout_threshold {
-                    let mut multiplier = params.min_multiplier;
-                    while multiplier <= params.max_multiplier {
-                        let stake_percent_range = if params.bet_type == "fixed" {
-                            vec![params.min_stake_percent]
-                        } else {
-                            let mut percents = Vec::new();
-                            let mut current = params.min_stake_percent;
-                            while current <= params.max_stake_percent {
-                                percents.push(current);
-                                current += 0.1;
-                            }
-                            percents
-                        };
-
-                        for stake_percent in stake_percent_range {
-                            for attempts in params.min_attempts_count..=params.max_attempts_count {
-                                combinations.push(ParameterCombination {
-                                    num_low,
-                                    search_threshold,
-                                    high_threshold,
-                                    payout_threshold,
-                                    multiplier,
-                                    stake_percent,
-                                    attempts,
-                                });
-                            }
-                        }
-                        multiplier += 0.1;
-                    }
-                    payout_threshold += 0.1;
-                }
-                high_threshold += 0.1;
-            }
-            search_threshold += 0.1;
-        }
-    }
-    combinations
 }
 
 pub fn strategy_triple_growth(
@@ -153,9 +252,9 @@ pub fn strategy_triple_growth(
                 let mut current_stake = initial_bet;
 
                 while betting_attempts <= attempts - 1 && current_i < len - 1 {
-                    // Проверка достаточности баланса для текущей ставки
+    
                     if current_stake > balance {
-                        // Если баланса не хватает, прерываем серию ставок
+            
                         break;
                     }
 
@@ -196,139 +295,245 @@ pub fn strategy_triple_growth(
         consecutive_losses,
     )
 }
-pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<OptimizationResult> {
+pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec<OptimizationResult>, io::Error> {
     let cuda_available = check_cuda_availability();
-    let combinations = generate_parameter_combinations(params);
-    let total_combinations = combinations.len();
-    let progress_step = std::cmp::max(1, total_combinations / 20); // 5% шаг, минимум 1
-    let processed_cpu = Arc::new(AtomicUsize::new(0));
-    let processed_gpu = Arc::new(AtomicUsize::new(0));
 
-    if combinations.len() < 100 {
-        let task_queue = Arc::new(ArrayQueue::new(combinations.len()));
-        task_queue.push(combinations).unwrap();
+    // Создаем итератор вместо полного вектора комбинаций
+    let param_iterator = ParameterCombinationIterator::new(params.clone());
+    let total_combinations = param_iterator.estimate_total_count();
+
+    println!("Оценка количества комбинаций: {}", total_combinations);
+    println!("Начинаем оптимизацию с итеративной обработкой...");
+
+    // Проверяем способ поиска из settings.json
+    let search_mode = &params.search_mode;
+
+    // Получаем размер партии из конфигурации или используем значение по умолчанию
+    let max_batch_size: usize = params.max_combination_batch
+        .parse()
+        .unwrap_or(1000000);
+
+    let progress_step = std::cmp::max(1, total_combinations / 20);
+    let processed_count = Arc::new(AtomicUsize::new(0));
+
+    if search_mode == "full" && total_combinations < 100 {
+        // Для малого количества комбинаций можем использовать прямой подход
+        let mut all_combinations = Vec::new();
+        for combo in param_iterator {
+            all_combinations.push(combo);
+        }
+
+        let task_queue = Arc::new(ArrayQueue::new(all_combinations.len()));
+        task_queue.push(all_combinations).unwrap();
 
         let gpu_results = if cuda_available {
-            process_gpu_combinations(
-                &task_queue,
-                numbers,
-                params,
-                &processed_gpu,
-                progress_step,
-                total_combinations
-            )
+            let (results, _) = process_gpu_combinations(
+                &task_queue, numbers, params, &processed_count, progress_step, total_combinations
+            )?;
+            results
         } else {
-            (Vec::new(), std::time::Duration::new(0, 0))
+            Vec::new()
         };
 
-        let (mut results, gpu_time) = gpu_results;
+        // Сортируем и возвращаем результаты
+        let mut results = gpu_results;
         results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
 
-        let max_results: usize = params.max_results.parse().unwrap_or(10000);
-        results.truncate(max_results);
+        let max_results: usize = params.max_results.parse::<usize>()
+            .unwrap_or(10000);
 
-        println!("\nСтатистика выполнения (только GPU):");
-        println!("Время GPU: {:?}", gpu_time);
-        println!("Найдено стратегий: {}", results.len());
+        if results.len() > max_results {
+            results.truncate(max_results);
+        }
 
-        return results;
+        return Ok(results);
     }
 
-    let shared_task_queue = Arc::new(ArrayQueue::new(combinations.len()));
-    println!("Всего комбинаций для обработки: {}", total_combinations);
-    println!("Начинаем оптимизацию...");
+    // Создаем структуры для хранения лучших результатов
+    use std::collections::BinaryHeap;
+    use std::cmp::Reverse;
 
-    // Оптимизированный размер пакета для RTX 3060 12GB
-    let optimal_batch_size = 8000; // Увеличен размер пакета для лучшего использования 12GB VRAM
-    println!("Используем оптимизированный размер пакета для GPU: {}", optimal_batch_size);
+    #[derive(PartialEq, Eq)]
+    struct HeapItem(Reverse<OrderedFloat<f64>>, OptimizationResult);
 
-    for chunk in combinations.chunks(optimal_batch_size) {
-        shared_task_queue.push(chunk.to_vec()).unwrap();
+    impl PartialOrd for HeapItem {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.0.partial_cmp(&other.0)
+        }
     }
 
+    impl Ord for HeapItem {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0.cmp(&other.0)
+        }
+    }
+
+    let max_results: usize = params.max_results.parse::<usize>().unwrap_or(10000);
+
+    // Создаем ОДНУ общую очередь для CPU и GPU
+    let shared_task_queue = Arc::new(ArrayQueue::<Vec<ParameterCombination>>::new(1000));
+
+    // Обрабатываем батчами
+    let mut current_batch = Vec::with_capacity(max_batch_size);
+    let mut batch_counter = 0;
+
+    // Заполняем очередь начальными задачами
+    for combination in param_iterator {
+        current_batch.push(combination);
+
+        if current_batch.len() >= max_batch_size {
+            // Сохраняем промежуточный результат
+            if batch_counter % 5 == 0 && total_combinations > 1000000 { // Сохраняем только каждый 5-й батч для больших наборов
+                save_intermediate_batch(&current_batch, batch_counter)?;
+            }
+
+            // Добавляем батч в общую очередь задач
+            while shared_task_queue.push(current_batch.clone()).is_err() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            current_batch.clear();
+            batch_counter += 1;
+        }
+    }
+
+    // Обрабатываем оставшиеся комбинации
+    if !current_batch.is_empty() {
+        // Добавляем последний неполный батч в очередь
+        while shared_task_queue.push(current_batch.clone()).is_err() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        current_batch.clear();
+    }
+
+    // Запускаем потоки для CPU и GPU обработки
     let task_queue_cpu = Arc::clone(&shared_task_queue);
     let numbers_for_cpu = numbers.clone();
     let params_for_cpu = params.clone();
-    let processed_cpu_clone = Arc::clone(&processed_cpu);
+    let processed_cpu_clone = Arc::clone(&processed_count);
+    let max_results_cpu = max_results;
 
-    let cpu_thread = std::thread::spawn(move || {
+    let cpu_thread = std::thread::spawn(move || -> Result<(Vec<HeapItem>, std::time::Duration), io::Error> {
         let cpu_start = Instant::now();
-        let core_ids = core_affinity::get_core_ids().unwrap();
-        let mut cpu_results = Vec::new();
+        let core_ids = core_affinity::get_core_ids()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Не удалось получить core_ids"))?;
+
+        // Используем BinaryHeap вместо Vec для хранения только лучших результатов
+        let mut cpu_best_results = BinaryHeap::with_capacity(max_results_cpu + 1);
 
         let p_core_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(P_THREADS)
             .start_handler(move |id| {
-                core_affinity::set_for_current(core_ids[id]);
+                core_affinity::set_for_current(core_ids[id % core_ids.len()]);
                 unsafe {
                     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
                 }
             })
             .build()
-            .unwrap();
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка создания пула потоков: {}", e)))?;
 
         while let Some(chunk) = task_queue_cpu.pop() {
             let chunk_results = p_core_pool.install(|| {
                 process_cpu_combinations(&chunk, &numbers_for_cpu, &params_for_cpu)
             });
-            cpu_results.extend(chunk_results);
+
+            // Добавляем результаты в heap и удаляем худшие, если превышен лимит
+            for result in chunk_results {
+                let item = HeapItem(Reverse(OrderedFloat(result.balance)), result);
+                cpu_best_results.push(item);
+
+                // Если в куче больше элементов, чем нужно, удаляем худший (с наименьшим balance)
+                if cpu_best_results.len() > max_results_cpu {
+                    cpu_best_results.pop();
+                }
+            }
 
             let current = processed_cpu_clone.fetch_add(chunk.len(), Ordering::SeqCst);
             if current / progress_step != (current + chunk.len()) / progress_step {
-                println!("CPU прогресс: {}%",
-                         ((current + chunk.len()) * 100) / total_combinations);
+                println!(
+                    "CPU прогресс: {}%",
+                    ((current + chunk.len()) * 100) / total_combinations
+                );
             }
         }
 
-        (cpu_results, cpu_start.elapsed())
+        // Преобразуем BinaryHeap в вектор для возврата
+        let results_vec: Vec<HeapItem> = cpu_best_results.into_iter().collect();
+        Ok((results_vec, cpu_start.elapsed()))
     });
 
-    let gpu_results = if cuda_available {
-        process_gpu_combinations(
-            &shared_task_queue,
+    // Также обрабатываем данные на GPU, если доступен
+    let (gpu_results, gpu_time) = if cuda_available {
+        match process_gpu_combinations(
+            &shared_task_queue,  // Используем ту же общую очередь
             numbers,
             params,
-            &processed_gpu,
+            &processed_count,
             progress_step,
             total_combinations
-        )
+        ) {
+            Ok(result) => result,
+            Err(e) => return Err(e),
+        }
     } else {
         (Vec::new(), std::time::Duration::new(0, 0))
     };
 
-    let (cpu_results, cpu_time) = cpu_thread.join().unwrap();
-    let (gpu_results, gpu_time) = gpu_results;
+    // Ожидаем завершения CPU потока
+    let (cpu_results_heap, cpu_time) = match cpu_thread.join() {
+        Ok(result) => result?,
+        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, format!("Ошибка в CPU потоке: {:?}", e))),
+    };
 
-    let mut combined_results = Vec::new();
-    combined_results.extend(cpu_results.clone());
-    combined_results.extend(gpu_results.clone());
-    combined_results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
+    // Объединяем результаты из CPU и GPU
+    let mut final_heap = BinaryHeap::with_capacity(max_results);
 
-    let max_results: usize = params.max_results.parse().unwrap_or(10000);
-    combined_results.truncate(max_results);
+    // Добавляем результаты из CPU heap
+    for item in cpu_results_heap {
+        final_heap.push(item);
+        if final_heap.len() > max_results {
+            final_heap.pop(); // Удаляем худший результат
+        }
+    }
+
+    // Конвертируем GPU результаты в HeapItem и добавляем их
+    for result in gpu_results {
+        let item = HeapItem(Reverse(OrderedFloat(result.balance)), result);
+        final_heap.push(item);
+        if final_heap.len() > max_results {
+            final_heap.pop();
+        }
+    }
+
+    // Извлекаем результаты из кучи и сортируем
+    let mut all_results: Vec<OptimizationResult> = final_heap.into_iter()
+        .map(|item| item.1)
+        .collect();
+
+    all_results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
 
     println!("\nСтатистика выполнения:");
     println!("CPU время: {:?}", cpu_time);
     println!("GPU время: {:?}", gpu_time);
     println!(
-        "Найдено стратегий: {} (CPU: {}, GPU: {})",
-        combined_results.len(),
-        cpu_results.len(),
-        gpu_results.len()
+        "Найдено стратегий: {}",
+        all_results.len()
     );
 
-    combined_results
+    Ok(all_results)
 }
+
+
+
 
 fn process_cpu_combinations(
     combinations: &[ParameterCombination],
     numbers: &Array1<f64>,
     params: &Params,
 ) -> Vec<OptimizationResult> {
-    // Используем просто core_affinity вместо hwloc
+
     let core_ids = core_affinity::get_core_ids().unwrap();
 
-    // Вычисляем размер чанка и гарантируем что он не будет нулевым
     let chunk_size = std::cmp::max(1, combinations.len() / P_THREADS);
 
     let p_core_pool = rayon::ThreadPoolBuilder::new()
@@ -360,24 +565,39 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
     processed_gpu: &Arc<AtomicUsize>,
     progress_step: usize,
     total_combinations: usize,
-) -> (Vec<OptimizationResult>, std::time::Duration) {
+) -> Result<(Vec<OptimizationResult>, std::time::Duration), io::Error> {
     let gpu_start = Instant::now();
     let mut all_gpu_results = Vec::new();
 
     unsafe {
-        rustacuda::init(CudaFlags::empty()).unwrap();
-        let device = Device::get_device(0).unwrap();
+        rustacuda::init(CudaFlags::empty())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка инициализации CUDA: {}", e)))?;
+        let device = Device::get_device(0)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка получения CUDA устройства: {}", e)))?;
         let _context = Context::create_and_push(
             ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
             device
-        ).unwrap();
+        ).map_err(|e| to_io_error(e, "Ошибка создания CUDA контекста"))?;
 
-        let ptx = CString::new(include_str!("../cuda/kernel.ptx")).unwrap();
-        let module = Module::load_from_string(&ptx).unwrap();
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
-        let numbers_slice = numbers.as_slice().unwrap();
-        let kernel_name = CString::new("optimize_kernel").unwrap();
-        let function = module.get_function(&kernel_name).unwrap();
+        let ptx = CString::new(include_str!("../cuda/kernel.ptx"))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка создания CString для PTX: {}", e)))?;
+
+        let module = Module::load_from_string(&ptx)
+            .map_err(|e| to_io_error(e, "Ошибка загрузки CUDA модуля"))?;
+
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)
+            .map_err(|e| to_io_error(e, "Ошибка создания CUDA потока"))?;
+        let kernel_name = CString::new("optimize_kernel")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка создания CString: {}", e)))?;
+        let function = module.get_function(&kernel_name)
+            .map_err(|e| to_io_error(e, "Ошибка получения CUDA функции"))?;
+
+
+
+        let numbers_slice = numbers.as_slice()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Не удалось получить slice из numbers"))?;
+
+
         let bet_type = if params.bet_type == "fixed" { 0 } else { 1 };
 
         while let Some(batch) = task_queue.pop() {
@@ -409,9 +629,12 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
                 batch.len()
             ];
 
-            let mut d_numbers = DeviceBuffer::from_slice(numbers_slice).unwrap();
-            let mut d_params = DeviceBuffer::from_slice(&params_array).unwrap();
-            let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer).unwrap();
+            let mut d_numbers = DeviceBuffer::from_slice(numbers_slice)
+                .map_err(|e| to_io_error(e, "Ошибка создания DeviceBuffer для numbers"))?;
+            let mut d_params = DeviceBuffer::from_slice(&params_array)
+                .map_err(|e| to_io_error(e, "Ошибка создания DeviceBuffer для параметров"))?;
+            let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer)
+                .map_err(|e| to_io_error(e, "Ошибка создания DeviceBuffer для результатов"))?;
 
             launch!(function<<<(batch.len() as u32, 1, 1), (1024, 1, 1), 0, stream>>>(
                 d_numbers.as_device_ptr(),
@@ -422,17 +645,18 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
                 bet_type,
                 round_to_cents(params.stake)
             ))
-                .unwrap();
+                .map_err(|e| to_io_error(e, "Ошибка запуска CUDA ядра"))?;
 
-            stream.synchronize().unwrap();
+            stream.synchronize().map_err(|e| to_io_error(e, "Ошибка синхронизации CUDA потока"))?;
 
             let mut batch_results = gpu_results_buffer;
-            d_results.copy_to(&mut batch_results).unwrap();
+            d_results.copy_to(&mut batch_results)
+                .map_err(|e| to_io_error(e, "Ошибка копирования результатов с GPU"))?;
             let batch_results = batch_results
                 .into_iter()
                 .zip(batch.iter())
                 .filter_map(|(gpu_result, combo)| {
-                    // Отфильтровываем комбинации с недостаточным балансом для всех ставок
+
                     if gpu_result.profit > 0.0 {
                         Some(OptimizationResult {
                             num_low: combo.num_low,
@@ -467,7 +691,7 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
         }
     }
 
-    (all_gpu_results, gpu_start.elapsed())
+    Ok((all_gpu_results, gpu_start.elapsed()))
 }
 
 
@@ -482,26 +706,23 @@ fn process_combination(
         0.0
     };
 
-    // Проверка возможности выполнить максимальное количество ставок
     let initial_bet = if params.bet_type == "fixed" {
         round_to_cents(params.stake)
     } else {
         round_to_cents(params.initial_balance * (combo.stake_percent / 100.0))
     };
 
-    // Симуляция последовательности ставок для проверки достаточности баланса
     let mut test_balance = round_to_cents(params.initial_balance);
     let mut test_stake = initial_bet;
     for _ in 0..combo.attempts {
         if test_stake > test_balance {
-            // Если для следующей ставки недостаточно средств, отбраковываем эту комбинацию
+
             return None;
         }
         test_balance = round_to_cents(test_balance - test_stake);
         test_stake = round_to_cents(test_stake * combo.multiplier);
     }
 
-    // Если проверка прошла, продолжаем с основным расчетом
     let (balance, max_balance, total_bets, total_series, winning_series, _) =
         strategy_triple_growth(
             numbers,
@@ -540,3 +761,45 @@ fn process_combination(
         None
     }
 }
+
+fn save_intermediate_batch(batch: &[ParameterCombination], batch_id: usize) -> std::io::Result<()> {
+
+    let temp_dir = Path::new("temp_batches");
+    if !temp_dir.exists() {
+        create_dir_all(temp_dir)?;
+    }
+
+    let file_path = temp_dir.join(format!("batch_{}.bin", batch_id));
+    let file = File::create(file_path)?;
+    let writer = BufWriter::new(file);
+
+    bincode::serialize_into(writer, batch)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+
+fn load_intermediate_batch(batch_id: usize) -> std::io::Result<Vec<ParameterCombination>> {
+    let file_path = Path::new("temp_batches").join(format!("batch_{}.bin", batch_id));
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+
+    bincode::deserialize_from(reader)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+
+fn save_best_results(results: &[OptimizationResult], batch_id: usize) -> std::io::Result<()> {
+    let temp_dir = Path::new("temp_results");
+    if !temp_dir.exists() {
+        create_dir_all(temp_dir)?;
+    }
+
+    let file_path = temp_dir.join(format!("results_{}.bin", batch_id));
+    let file = File::create(file_path)?;
+    let writer = BufWriter::new(file);
+
+    bincode::serialize_into(writer, results)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+fn to_io_error<E: std::error::Error>(e: E, message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, format!("{}: {}", message, e))
+}
+

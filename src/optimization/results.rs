@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+use serde_derive::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct OptimizationResult {
     pub num_low: usize,
     pub search_threshold: f64,
@@ -17,7 +19,7 @@ pub struct OptimizationResult {
     pub initial_stake: f64,
     pub bet_type: String,
 }
-
+impl Eq for OptimizationResult {}
 impl OptimizationResult {
     #[allow(dead_code)]
     pub fn to_string(&self) -> String {

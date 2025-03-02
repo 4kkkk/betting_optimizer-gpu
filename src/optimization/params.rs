@@ -21,4 +21,6 @@ pub struct Params {
     pub max_attempts_count: usize,
     pub numbers: Array1<f64>,
     pub max_results: String,
+    pub max_combination_batch: String,
+    pub search_mode: String,
 }

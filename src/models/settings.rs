@@ -20,10 +20,11 @@ pub struct Settings {
     pub max_search_threshold: String,
     pub min_attempts_count: String,
     pub max_attempts_count: String,
-    // Добавляем новые поля с значениями по умолчанию
     pub max_balance_threshold: String,
     pub series_win_rate_threshold: String,
     pub max_results: String,
+    pub max_combination_batch: String,
+    pub search_mode: String,
 }
 
 impl Default for Settings {
@@ -50,6 +51,8 @@ impl Default for Settings {
             max_balance_threshold: "1000".to_string(),
             series_win_rate_threshold: "50".to_string(),
             max_results: "10000".to_string(),
+            max_combination_batch: "1000000".to_string(),
+            search_mode: "chunked".to_string(),
         }
     }
 }
