@@ -408,7 +408,7 @@ fn process_gpu_combinations(
             let mut d_params = DeviceBuffer::from_slice(&params_array).unwrap();
             let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer).unwrap();
 
-            launch!(function<<<(batch.len() as u32, 1, 1), (256, 1, 1), 0, stream>>>(
+            launch!(function<<<(batch.len() as u32, 1, 1), (1024, 1, 1), 0, stream>>>(
                 d_numbers.as_device_ptr(),
                 d_params.as_device_ptr(),
                 d_results.as_device_ptr(),

@@ -2,7 +2,7 @@
 #include <math.h>
 
 #define SM_TARGET 86
-#define THREADS_PER_BLOCK 256
+#define THREADS_PER_BLOCK 1024
 #define MAX_SHARED_MEM_PER_BLOCK 49152
 #define WARP_SIZE 32
 
