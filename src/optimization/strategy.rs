@@ -26,7 +26,7 @@ use serde::{Serialize, Deserialize};
 
 
 
-const P_THREADS: usize = 23;
+const P_THREADS: usize = 20;
 
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
@@ -342,8 +342,6 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         let max_results: usize = params.max_results.parse::<usize>()
             .unwrap_or(10000);
 
-
-
         if results.len() > max_results {
             results.truncate(max_results);
         }
@@ -372,13 +370,41 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
 
     let max_results: usize = params.max_results.parse::<usize>().unwrap_or(10000);
 
+    // Создаем ОДНУ общую очередь для CPU и GPU
+    let shared_task_queue = Arc::new(ArrayQueue::<Vec<ParameterCombination>>::new(1000));
 
     // Обрабатываем батчами
     let mut current_batch = Vec::with_capacity(max_batch_size);
     let mut batch_counter = 0;
 
-    // Создаем очередь задач для CPU и GPU
-    let shared_task_queue = Arc::new(ArrayQueue::<Vec<ParameterCombination>>::new(100));
+    // Заполняем очередь начальными задачами
+    for combination in param_iterator {
+        current_batch.push(combination);
+
+        if current_batch.len() >= max_batch_size {
+            // Сохраняем промежуточный результат
+            if batch_counter % 5 == 0 && total_combinations > 1000000 { // Сохраняем только каждый 5-й батч для больших наборов
+                save_intermediate_batch(&current_batch, batch_counter)?;
+            }
+
+            // Добавляем батч в общую очередь задач
+            while shared_task_queue.push(current_batch.clone()).is_err() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            current_batch.clear();
+            batch_counter += 1;
+        }
+    }
+
+    // Обрабатываем оставшиеся комбинации
+    if !current_batch.is_empty() {
+        // Добавляем последний неполный батч в очередь
+        while shared_task_queue.push(current_batch.clone()).is_err() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        current_batch.clear();
+    }
 
     // Запускаем потоки для CPU и GPU обработки
     let task_queue_cpu = Arc::clone(&shared_task_queue);
@@ -432,49 +458,14 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         }
 
         // Преобразуем BinaryHeap в вектор для возврата
-        let results_vec: Vec<HeapItem> = cpu_best_results.into_vec();
+        let results_vec: Vec<HeapItem> = cpu_best_results.into_iter().collect();
         Ok((results_vec, cpu_start.elapsed()))
     });
-
-    // Обрабатываем комбинации из итератора
-    for combination in param_iterator {
-        current_batch.push(combination);
-
-        if current_batch.len() >= max_batch_size {
-            // Сохраняем промежуточный результат
-            save_intermediate_batch(&current_batch, batch_counter)?;
-
-            // Добавляем батч в очередь задач
-            while shared_task_queue.push(current_batch.clone()).is_err() {
-                // Очередь полна, немного подождем
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-
-            current_batch.clear();
-            batch_counter += 1;
-        }
-    }
-
-    // Обрабатываем оставшиеся комбинации
-    if !current_batch.is_empty() {
-        // Добавляем последний неполный батч в очередь
-        while shared_task_queue.push(current_batch.clone()).is_err() {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        current_batch.clear();
-    }
-
-    // Ожидаем завершения потоков
-    let (cpu_results_heap, cpu_time) = match cpu_thread.join() {
-        Ok(result) => result?,
-        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, format!("Ошибка в CPU потоке: {:?}", e))),
-    };
 
     // Также обрабатываем данные на GPU, если доступен
     let (gpu_results, gpu_time) = if cuda_available {
         match process_gpu_combinations(
-
-            &shared_task_queue,
+            &shared_task_queue,  // Используем ту же общую очередь
             numbers,
             params,
             &processed_count,
@@ -486,6 +477,12 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         }
     } else {
         (Vec::new(), std::time::Duration::new(0, 0))
+    };
+
+    // Ожидаем завершения CPU потока
+    let (cpu_results_heap, cpu_time) = match cpu_thread.join() {
+        Ok(result) => result?,
+        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, format!("Ошибка в CPU потоке: {:?}", e))),
     };
 
     // Объединяем результаты из CPU и GPU
@@ -525,6 +522,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
 
     Ok(all_results)
 }
+
 
 
 
