@@ -19,5 +19,7 @@
   "max_attempts_count": "4",
   "max_balance_threshold": "1000",
   "series_win_rate_threshold": "50",
-  "max_results": "10000"
+  "max_results": "10000",
+  "max_combination_batch": "10000000",
+  "search_mode": "chunked"
 }
