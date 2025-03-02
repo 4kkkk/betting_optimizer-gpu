@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
+use serde_derive::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct OptimizationResult {
     pub num_low: usize,
     pub search_threshold: f64,

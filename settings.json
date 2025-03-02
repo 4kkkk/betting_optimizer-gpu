@@ -1,5 +1,5 @@
 {
-  "file_path": "D:\\betting_optimizer-gpu\\data\\ezcash-kefs-online.txt",
+  "file_path": "D:\\betting_optimizer-gpu\\data\\upx-kefs-online.txt",
   "stake": "1",
   "min_multiplier": "1",
   "max_multiplier": "5",
@@ -7,8 +7,8 @@
   "min_num_low": "1",
   "max_num_low": "5",
   "min_payout_threshold": "1.5",
-  "max_payout_threshold": "5",
-  "bet_type": "percent",
+  "max_payout_threshold": "3",
+  "bet_type": "fixed",
   "min_stake_percent": "0.1",
   "max_stake_percent": "2",
   "min_high_threshold": "2",

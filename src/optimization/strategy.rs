@@ -20,6 +20,11 @@ use eframe::emath::OrderedFloat;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
+use serde::{Serialize, Deserialize};
+
+
+
+
 
 const P_THREADS: usize = 23;
 
@@ -182,7 +187,7 @@ impl Iterator for ParameterCombinationIterator {
 
 
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ParameterCombination {
     num_low: usize,
     search_threshold: f64,
@@ -334,9 +339,10 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         let mut results = gpu_results;
         results.sort_by(|a, b| b.balance.partial_cmp(&a.balance).unwrap());
 
-        let max_results: usize = params.max_results.parse()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
-                                        format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
+        let max_results: usize = params.max_results.parse::<usize>()
+            .unwrap_or(10000);
+
+
 
         if results.len() > max_results {
             results.truncate(max_results);
@@ -364,9 +370,8 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         }
     }
 
-    let max_results: usize = params.max_results.parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
-                                    format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
+    let max_results: usize = params.max_results.parse::<usize>().unwrap_or(10000);
+
 
     // Обрабатываем батчами
     let mut current_batch = Vec::with_capacity(max_batch_size);
