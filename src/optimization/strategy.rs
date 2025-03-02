@@ -339,7 +339,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
 
         let max_results: usize = params.max_results.parse()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
-                        format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
+                                        format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
 
         if results.len() > max_results {
             results.truncate(max_results);
@@ -471,6 +471,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
     // Также обрабатываем данные на GPU, если доступен
     let (gpu_results, gpu_time) = if cuda_available {
         match process_gpu_combinations(
+
             &shared_task_queue,
             numbers,
             params,
@@ -524,6 +525,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
 }
 
 
+
 fn process_cpu_combinations(
     combinations: &[ParameterCombination],
     numbers: &Array1<f64>,
@@ -563,7 +565,7 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
     processed_gpu: &Arc<AtomicUsize>,
     progress_step: usize,
     total_combinations: usize,
-) -> (Vec<OptimizationResult>, std::time::Duration) {
+) -> Result<(Vec<OptimizationResult>, std::time::Duration), io::Error> {
     let gpu_start = Instant::now();
     let mut all_gpu_results = Vec::new();
 
@@ -575,16 +577,27 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
         let _context = Context::create_and_push(
             ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
             device
-        ).unwrap();
+        ).map_err(|e| to_io_error(e, "Ошибка создания CUDA контекста"))?;
 
-        let ptx = CString::new(include_str!("../cuda/kernel.ptx")).unwrap();
+        let ptx = CString::new(include_str!("../cuda/kernel.ptx"))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка создания CString для PTX: {}", e)))?;
+
         let module = Module::load_from_string(&ptx)
             .map_err(|e| to_io_error(e, "Ошибка загрузки CUDA модуля"))?;
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)
+            .map_err(|e| to_io_error(e, "Ошибка создания CUDA потока"))?;
+        let kernel_name = CString::new("optimize_kernel")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка создания CString: {}", e)))?;
+        let function = module.get_function(&kernel_name)
+            .map_err(|e| to_io_error(e, "Ошибка получения CUDA функции"))?;
+
+
+
         let numbers_slice = numbers.as_slice()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Не удалось получить slice из numbers"))?;
-        let kernel_name = CString::new("optimize_kernel").unwrap();
-        let function = module.get_function(&kernel_name).unwrap();
+
+
         let bet_type = if params.bet_type == "fixed" { 0 } else { 1 };
 
         while let Some(batch) = task_queue.pop() {
@@ -616,9 +629,12 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
                 batch.len()
             ];
 
-            let mut d_numbers = DeviceBuffer::from_slice(numbers_slice).unwrap();
-            let mut d_params = DeviceBuffer::from_slice(&params_array).unwrap();
-            let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer).unwrap();
+            let mut d_numbers = DeviceBuffer::from_slice(numbers_slice)
+                .map_err(|e| to_io_error(e, "Ошибка создания DeviceBuffer для numbers"))?;
+            let mut d_params = DeviceBuffer::from_slice(&params_array)
+                .map_err(|e| to_io_error(e, "Ошибка создания DeviceBuffer для параметров"))?;
+            let mut d_results = DeviceBuffer::from_slice(&gpu_results_buffer)
+                .map_err(|e| to_io_error(e, "Ошибка создания DeviceBuffer для результатов"))?;
 
             launch!(function<<<(batch.len() as u32, 1, 1), (1024, 1, 1), 0, stream>>>(
                 d_numbers.as_device_ptr(),
@@ -629,12 +645,13 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
                 bet_type,
                 round_to_cents(params.stake)
             ))
-                .unwrap();
+                .map_err(|e| to_io_error(e, "Ошибка запуска CUDA ядра"))?;
 
-            stream.synchronize().unwrap();
+            stream.synchronize().map_err(|e| to_io_error(e, "Ошибка синхронизации CUDA потока"))?;
 
             let mut batch_results = gpu_results_buffer;
-            d_results.copy_to(&mut batch_results).unwrap();
+            d_results.copy_to(&mut batch_results)
+                .map_err(|e| to_io_error(e, "Ошибка копирования результатов с GPU"))?;
             let batch_results = batch_results
                 .into_iter()
                 .zip(batch.iter())
@@ -674,7 +691,7 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
         }
     }
 
-    (all_gpu_results, gpu_start.elapsed())
+    Ok((all_gpu_results, gpu_start.elapsed()))
 }
 
 
@@ -786,4 +803,3 @@ fn to_io_error<E: std::error::Error>(e: E, message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::Other, format!("{}: {}", message, e))
 }
 
-// Использование:
