@@ -229,7 +229,7 @@ pub fn save_detailed_calculation(
                 // Удаляем сложные проверки can_make_all_bets, которые могут сохранять состояние
                 // между сериями ставок, и заменяем их простой проверкой в цикле
 
-                for attempt in 0..best_result.attempts {
+                for _attempt in 0..best_result.attempts {
                     if current_i >= numbers.len() - 1 {
                         if row_count < MAX_DETAILED_ROWS {
                             rows.push(RowData {
