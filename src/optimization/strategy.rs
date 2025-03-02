@@ -301,10 +301,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
     println!("Начинаем оптимизацию с итеративной обработкой...");
 
     // Проверяем способ поиска из settings.json
-    let search_mode = match &params.search_mode {
-        Some(mode) => mode.as_str(),
-        None => "chunked",
-    };
+    let search_mode = &params.search_mode;
 
     // Получаем размер партии из конфигурации или используем значение по умолчанию
     let max_batch_size: usize = params.max_combination_batch
@@ -376,7 +373,7 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
     let mut batch_counter = 0;
 
     // Создаем очередь задач для CPU и GPU
-    let shared_task_queue = Arc::new(ArrayQueue::new(100)); // Храним до 100 батчей в очереди
+    let shared_task_queue = Arc::new(ArrayQueue::<Vec<ParameterCombination>>::new(100));
 
     // Запускаем потоки для CPU и GPU обработки
     let task_queue_cpu = Arc::clone(&shared_task_queue);

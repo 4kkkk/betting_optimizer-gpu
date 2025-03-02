@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
 pub struct OptimizationResult {
     pub num_low: usize,
     pub search_threshold: f64,
@@ -17,7 +17,7 @@ pub struct OptimizationResult {
     pub initial_stake: f64,
     pub bet_type: String,
 }
-
+impl Eq for OptimizationResult {}
 impl OptimizationResult {
     #[allow(dead_code)]
     pub fn to_string(&self) -> String {
