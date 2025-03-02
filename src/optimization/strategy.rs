@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
 
-const P_THREADS: usize = 20;
+const P_THREADS: usize = 23;
 
 #[repr(C)]
 #[derive(Clone, Copy, DeviceCopy, Debug)]
@@ -238,7 +238,11 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Vec<Optimi
     println!("Всего комбинаций для обработки: {}", total_combinations);
     println!("Начинаем оптимизацию...");
 
-    for chunk in combinations.chunks(4000) {
+    // Оптимизированный размер пакета для RTX 3060 12GB
+    let optimal_batch_size = 8000; // Увеличен размер пакета для лучшего использования 12GB VRAM
+    println!("Используем оптимизированный размер пакета для GPU: {}", optimal_batch_size);
+
+    for chunk in combinations.chunks(optimal_batch_size) {
         shared_task_queue.push(chunk.to_vec()).unwrap();
     }
 
@@ -321,6 +325,7 @@ fn process_cpu_combinations(
     numbers: &Array1<f64>,
     params: &Params,
 ) -> Vec<OptimizationResult> {
+    // Используем просто core_affinity вместо hwloc
     let core_ids = core_affinity::get_core_ids().unwrap();
 
     // Вычисляем размер чанка и гарантируем что он не будет нулевым
@@ -348,8 +353,8 @@ fn process_cpu_combinations(
             .collect()
     })
 }
-fn process_gpu_combinations(
-    task_queue: &Arc<ArrayQueue<Vec<ParameterCombination>>>,
+
+fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombination>>>,
     numbers: &Array1<f64>,
     params: &Params,
     processed_gpu: &Arc<AtomicUsize>,
