@@ -299,8 +299,11 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
 
     println!("Оценка количества комбинаций: {}", total_combinations);
     println!("Начинаем оптимизацию с итеративной обработкой...");
-    
-    let search_mode = params.search_mode.as_deref().unwrap_or("chunked");
+
+    let search_mode = match &params.search_mode {
+        Some(mode) => mode.as_str(),
+        None => "chunked",
+    };
     
     let max_batch_size: usize = params.max_combination_batch
         .parse()
@@ -349,7 +352,9 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
         }
     }
 
-    let max_results: usize = params.max_results.parse().unwrap_or(10000);
+    let max_results: usize = params.max_results.parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
+                                    format!("Ошибка парсинга max_results: {}", e)))?.unwrap_or(10000);
     let mut best_results = BinaryHeap::with_capacity(max_results);
 
 
@@ -367,7 +372,8 @@ pub fn optimize_parameters(numbers: &Array1<f64>, params: &Params) -> Result<Vec
 
     let cpu_thread = std::thread::spawn(move || {
         let cpu_start = Instant::now();
-        let core_ids = core_affinity::get_core_ids().unwrap();
+        let core_ids = core_affinity::get_core_ids()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Не удалось получить core_ids"))?;
         let mut cpu_results = Vec::new();
 
         let p_core_pool = rayon::ThreadPoolBuilder::new()
@@ -513,17 +519,21 @@ fn process_gpu_combinations(    task_queue: &Arc<ArrayQueue<Vec<ParameterCombina
     let mut all_gpu_results = Vec::new();
 
     unsafe {
-        rustacuda::init(CudaFlags::empty()).unwrap();
-        let device = Device::get_device(0).unwrap();
+        rustacuda::init(CudaFlags::empty())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка инициализации CUDA: {}", e)))?;
+        let device = Device::get_device(0)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Ошибка получения CUDA устройства: {}", e)))?;
         let _context = Context::create_and_push(
             ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO,
             device
         ).unwrap();
 
         let ptx = CString::new(include_str!("../cuda/kernel.ptx")).unwrap();
-        let module = Module::load_from_string(&ptx).unwrap();
+        let module = Module::load_from_string(&ptx)
+            .map_err(|e| to_io_error(e, "Ошибка загрузки CUDA модуля"))?;
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
-        let numbers_slice = numbers.as_slice().unwrap();
+        let numbers_slice = numbers.as_slice()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Не удалось получить slice из numbers"))?;
         let kernel_name = CString::new("optimize_kernel").unwrap();
         let function = module.get_function(&kernel_name).unwrap();
         let bet_type = if params.bet_type == "fixed" { 0 } else { 1 };
@@ -723,3 +733,8 @@ fn save_best_results(results: &[OptimizationResult], batch_id: usize) -> std::io
     bincode::serialize_into(writer, results)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
+fn to_io_error<E: std::error::Error>(e: E, message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, format!("{}: {}", message, e))
+}
+
+// Использование:
